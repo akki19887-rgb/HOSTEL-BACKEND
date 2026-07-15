@@ -1,6 +1,0 @@
-flask
-flask-cors
-google-genai
-pillow
-requests
-gunicorn
