@@ -143,6 +143,71 @@ def process_rough_layout():
 
 
 # ==========================================
+# 1B. AADHAR CARD AUTO-FILL (extracts fields from an Aadhar photo for the registration form)
+# ==========================================
+@app.route('/extract-aadhar', methods=['POST'])
+def extract_aadhar():
+    print("\n" + "="*50)
+    print("🟢 START: Aadhar extraction started!")
+
+    if 'aadhar_photo' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
+
+    file = request.files['aadhar_photo']
+
+    try:
+        img = Image.open(file)
+
+        prompt = """Look at this photo of an Indian Aadhar card and extract the printed details EXACTLY
+        as written on the card. Do not guess or invent anything — if a field is not clearly visible,
+        leave it as an empty string "".
+
+        Fields to extract:
+        1. full_name — the person's name as printed.
+        2. dob — date of birth, converted to YYYY-MM-DD format (Aadhar usually shows DD/MM/YYYY).
+        3. gender — exactly "Male", "Female", or "Other" (Aadhar prints "M" or "F" or similar — convert it).
+        4. aadhar_number — the 12-digit number, digits only, no spaces.
+        5. address — the full address block printed on the back of the card, as one single line
+           (join multi-line address with ", ").
+        6. father_or_guardian_name — the name after "S/O", "D/O", "W/O", or "C/O" if present on the
+           card (this is the father's/guardian's name) — WITHOUT the "S/O"/"D/O" prefix itself, just
+           the name. Empty string if not present.
+
+        Return ONLY a valid JSON object matching this structure EXACTLY (no markdown, no extra text):
+        {
+          "full_name": "RAHUL KUMAR SHARMA",
+          "dob": "1998-04-12",
+          "gender": "Male",
+          "aadhar_number": "234512346789",
+          "address": "House No 12, MG Road, Sector 4, Lucknow, Uttar Pradesh, 226001",
+          "father_or_guardian_name": "SURESH SHARMA"
+        }
+        """
+
+        print("👉 AI (gemini-2.5-flash) is reading the Aadhar card...")
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[prompt, img]
+        )
+
+        response_text = response.text.strip()
+        if response_text.startswith("```json"):
+            response_text = response_text[7:-3]
+        elif response_text.startswith("```"):
+            response_text = response_text[3:-3]
+
+        parsed_json = json.loads(response_text)
+
+        print(f"✅ DONE: Extracted name: {parsed_json.get('full_name', 'unknown')}")
+        print("="*50 + "\n")
+        return jsonify(parsed_json)
+
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================================
 # 2. EMAIL NOTIFICATION TO ADMIN (New Booking / Registration Form)
 # ==========================================
 @app.route('/send-registration-email', methods=['POST'])
