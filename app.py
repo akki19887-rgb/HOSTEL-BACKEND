@@ -67,20 +67,52 @@ def process_rough_layout():
         prompt = """Analyze this hand-drawn floor plan image to create an exact digital 2D replica.
 
         Follow these STRICT instructions:
-        1. CORRIDOR POSITION (CRITICAL): Identify the main empty walking space/hallway. Determine its placement relative to the rooms.
-           Choose EXACTLY ONE of these values: "left", "right", "top", "bottom", or "center".
-           (e.g., If rooms are on the right and the empty path is on the left, choose "left". If rooms are on both sides of the path, choose "center").
-        2. ROOMS: Identify all rooms, logical numbers (e.g., 1, 2, 3), and count the beds inside each (default to 1 if unclear).
-        3. AMENITIES: Identify if 'Bathroom' or 'Study Table' are written inside.
-        4. DOORS: True if doors/openings are marked.
+
+        1. CORRIDOR SHAPE (CRITICAL): Look at the walking space/hallway as a whole and decide which of
+           these four shapes it forms:
+           - "straight": ONE single corridor running along one edge or through the middle, with rooms
+             on at most two sides of it (this is the common case).
+           - "L": the corridor bends once, 90 degrees, like the letter L.
+           - "T": the corridor forms a T-junction — one corridor meets another at a midpoint, forming 3 arms.
+           - "cross": the corridor forms a "+" junction — two corridors crossing, forming 4 arms.
+
+        2. CORRIDOR POSITION (only when corridor_shape is "straight"): Choose EXACTLY ONE of these
+           values: "left", "right", "top", "bottom", or "center".
+           (e.g., If rooms are on the right and the empty path is on the left, choose "left". If rooms
+           are on both sides of the path, choose "center".)
+           If corridor_shape is "L", "T", or "cross", set corridor_position to "center" (it's ignored
+           in that case — quadrant assignment below is what actually matters).
+
+        3. ROOM QUADRANT (only when corridor_shape is "L", "T", or "cross"): For each room, imagine the
+           floor plan as a map and determine which quadrant it sits in relative to the corridor
+           junction: "NW" (top-left), "NE" (top-right), "SW" (bottom-left), or "SE" (bottom-right).
+           Leave this field out entirely (or null) when corridor_shape is "straight".
+
+        4. ROOMS: Identify all rooms, logical numbers (e.g., 1, 2, 3), and count the beds inside each
+           (default to 1 if unclear).
+        5. AMENITIES: Identify if 'Bathroom' or 'Study Table' are written inside a room, as their own
+           small boxes/icons (not a bed).
+        6. DOORS: True if doors/openings are marked.
 
         Return ONLY a valid JSON object matching this structure EXACTLY (No markdown, no extra text):
         {
           "corridor_detected": true,
+          "corridor_shape": "straight",
           "corridor_position": "left",
           "rooms": [
-            {"room_no": "1", "beds_count": 1, "amenities": ["study_table", "bathroom"], "has_door": true},
-            {"room_no": "2", "beds_count": 2, "amenities": [], "has_door": true}
+            {"room_no": "1", "beds_count": 1, "amenities": ["study_table", "bathroom"], "has_door": true, "quadrant": null},
+            {"room_no": "2", "beds_count": 2, "amenities": [], "has_door": true, "quadrant": null}
+          ]
+        }
+
+        Example for an "L" or "T" or "cross" shaped corridor, each room MUST include its quadrant:
+        {
+          "corridor_detected": true,
+          "corridor_shape": "cross",
+          "corridor_position": "center",
+          "rooms": [
+            {"room_no": "1", "beds_count": 1, "amenities": [], "has_door": true, "quadrant": "NE"},
+            {"room_no": "5", "beds_count": 2, "amenities": ["bathroom"], "has_door": true, "quadrant": "NW"}
           ]
         }
         """
@@ -101,7 +133,7 @@ def process_rough_layout():
 
         parsed_json = json.loads(response_text)
 
-        print(f"✅ DONE: Corridor detected at: {parsed_json.get('corridor_position', 'unknown')}")
+        print(f"✅ DONE: Corridor shape: {parsed_json.get('corridor_shape', 'unknown')} · position: {parsed_json.get('corridor_position', 'unknown')}")
         print("="*50 + "\n")
         return jsonify(parsed_json)
 
