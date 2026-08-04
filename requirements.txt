@@ -4,3 +4,4 @@ google-genai
 pillow
 requests
 gunicorn
+firebase-admin
