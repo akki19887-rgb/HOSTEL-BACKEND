@@ -36,6 +36,22 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL")
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
 
+# FIREBASE ADMIN SDK — needed only for the custom (Resend-branded) email verification link below.
+# Firebase Console → Project Settings → Service Accounts → "Generate new private key" downloads a
+# JSON file. Paste its ENTIRE content as the value of a FIREBASE_SERVICE_ACCOUNT_JSON env var
+# (same way as GEMINI_API_KEY above) — do not commit the JSON file itself to git.
+FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+firebase_admin_app = None
+if FIREBASE_SERVICE_ACCOUNT_JSON:
+    try:
+        import firebase_admin
+        from firebase_admin import credentials as fb_credentials, auth as fb_auth
+        cred = fb_credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_JSON))
+        firebase_admin_app = firebase_admin.initialize_app(cred)
+        print("✅ Firebase Admin SDK initialized.")
+    except Exception as e:
+        print(f"⚠️ Firebase Admin SDK failed to initialize: {e}")
+
 # SENTRY ERROR LOGGING (backend): optional. Set SENTRY_DSN env var (same way as GEMINI_API_KEY)
 # once you have it from sentry.io — the server will keep working fine even without it.
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
@@ -237,6 +253,53 @@ def send_registration_email():
             return jsonify({"error": resp.text}), 500
         return jsonify({"success": True})
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==========================================
+# 2B. CUSTOM EMAIL VERIFICATION (sent via Resend instead of Firebase's default sender —
+# better deliverability, less likely to land in spam, and matches HostelOM's branding)
+# ==========================================
+@app.route('/send-verification-email', methods=['POST'])
+def send_verification_email():
+    if not firebase_admin_app:
+        return jsonify({"error": "Firebase Admin SDK not configured on server. Set FIREBASE_SERVICE_ACCOUNT_JSON env var."}), 500
+    if not RESEND_API_KEY:
+        return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY env var."}), 500
+
+    data = request.get_json(silent=True) or {}
+    email = data.get('email', '').strip()
+    if not email:
+        return jsonify({"error": "email is required"}), 400
+
+    try:
+        # Firebase generates the actual secure verification link (same one it would've emailed
+        # itself) — we just take over how it gets delivered.
+        verify_link = fb_auth.generate_email_verification_link(email)
+
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": "HostelOM <onboarding@resend.dev>",  # change to your verified domain once set up
+                "to": [email],
+                "subject": "Verify your email for HostelOM",
+                "html": f"""
+                    <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
+                        <h2 style="color:#4f46e5;">Welcome to HostelOM 🏠</h2>
+                        <p>Please verify your email address to continue.</p>
+                        <p><a href="{verify_link}" style="display:inline-block; background:#4f46e5; color:white; padding:12px 24px; border-radius:10px; text-decoration:none; font-weight:bold;">Verify Email</a></p>
+                        <p style="color:#64748b; font-size:12px;">If the button doesn't work, copy this link: {verify_link}</p>
+                    </div>
+                """
+            },
+            timeout=10
+        )
+        if resp.status_code >= 300:
+            return jsonify({"error": resp.text}), 500
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"❌ ERROR sending verification email: {e}")
         return jsonify({"error": str(e)}), 500
 
 
