@@ -85,30 +85,51 @@ def process_rough_layout():
         Follow these STRICT instructions:
 
         1. CORRIDOR SHAPE (CRITICAL): Look at the walking space/hallway as a whole and decide which of
-           these four shapes it forms:
+           these five shapes it forms:
            - "straight": ONE single corridor running along one edge or through the middle, with rooms
              on at most two sides of it (this is the common case).
            - "L": the corridor bends once, 90 degrees, like the letter L.
            - "T": the corridor forms a T-junction — one corridor meets another at a midpoint, forming 3 arms.
            - "cross": the corridor forms a "+" junction — two corridors crossing, forming 4 arms.
+           - "H": there are TWO SEPARATE, PARALLEL straight corridors (e.g. one between the top row of
+             rooms and the middle row, and another between the middle row and the bottom row), which
+             may or may not be joined by a short connecting corridor segment — like the letter H. This
+             is different from "cross": in "H" the two corridors do NOT cross each other, they are two
+             independent straight runs stacked with room-rows between and around them.
 
         2. CORRIDOR POSITION (only when corridor_shape is "straight"): Choose EXACTLY ONE of these
            values: "left", "right", "top", "bottom", or "center".
            (e.g., If rooms are on the right and the empty path is on the left, choose "left". If rooms
            are on both sides of the path, choose "center".)
-           If corridor_shape is "L", "T", or "cross", set corridor_position to "center" (it's ignored
-           in that case — quadrant assignment below is what actually matters).
+           If corridor_shape is "L", "T", "cross", or "H", set corridor_position to "center" (it's
+           ignored in that case — quadrant/row assignment below is what actually matters).
 
         3. ROOM QUADRANT (only when corridor_shape is "L", "T", or "cross"): For each room, imagine the
            floor plan as a map and determine which quadrant it sits in relative to the corridor
            junction: "NW" (top-left), "NE" (top-right), "SW" (bottom-left), or "SE" (bottom-right).
-           Leave this field out entirely (or null) when corridor_shape is "straight".
+           Leave this field out entirely (or null) when corridor_shape is not "L"/"T"/"cross".
 
-        4. ROOMS: Identify all rooms, logical numbers (e.g., 1, 2, 3), and count the beds inside each
-           (default to 1 if unclear).
-        5. AMENITIES: Identify if 'Bathroom' or 'Study Table' are written inside a room, as their own
-           small boxes/icons (not a bed).
-        6. DOORS: True if doors/openings are marked.
+        4. ROOM ROW + SIDE (only when corridor_shape is "H"): For each room, determine:
+           - "row": which room-band it's in — "top" (above the first corridor), "middle" (between the
+             two corridors), or "bottom" (below the second corridor).
+           - "side": "left" or "right" of the vertical connector (if the drawing has no clear left/right
+             split, alternate rooms left/right in the order they appear, left-to-right on the page).
+           Leave both fields out entirely (or null) when corridor_shape is not "H".
+
+        5. ROOMS: Identify all rooms and their labels EXACTLY as handwritten. This is critical — do not
+           guess or "clean up" a label into a different one. If a room number is genuinely ambiguous
+           (could be a "9" or could be a letter), look at neighboring room numbers for a sequence (e.g.
+           if rooms 1-8 are already found in order, an ambiguous next label is almost certainly "9", not
+           a letter) and prefer the numeric reading that continues the sequence. Count the beds inside
+           each room (default to 1 if unclear, based on distinct bed shapes/labels like "bed1", "bed2").
+
+        6. AMENITIES (CRITICAL — DO NOT INVENT): Only mark 'bathroom' or 'study_table' for a room if
+           there is an explicit small box/icon/label for it INSIDE that room in the drawing (e.g. a box
+           labeled "bath", "washroom", "table", or a distinct bathroom/table icon). If a room contains
+           ONLY bed labels and nothing else, its amenities list MUST be empty — never add a bathroom or
+           table that was not actually drawn, even if other similar rooms in the plan have one.
+
+        7. DOORS: True if doors/openings are marked.
 
         Return ONLY a valid JSON object matching this structure EXACTLY (No markdown, no extra text):
         {
@@ -116,8 +137,8 @@ def process_rough_layout():
           "corridor_shape": "straight",
           "corridor_position": "left",
           "rooms": [
-            {"room_no": "1", "beds_count": 1, "amenities": ["study_table", "bathroom"], "has_door": true, "quadrant": null},
-            {"room_no": "2", "beds_count": 2, "amenities": [], "has_door": true, "quadrant": null}
+            {"room_no": "1", "beds_count": 1, "amenities": ["study_table", "bathroom"], "has_door": true, "quadrant": null, "row": null, "side": null},
+            {"room_no": "2", "beds_count": 2, "amenities": [], "has_door": true, "quadrant": null, "row": null, "side": null}
           ]
         }
 
@@ -127,8 +148,21 @@ def process_rough_layout():
           "corridor_shape": "cross",
           "corridor_position": "center",
           "rooms": [
-            {"room_no": "1", "beds_count": 1, "amenities": [], "has_door": true, "quadrant": "NE"},
-            {"room_no": "5", "beds_count": 2, "amenities": ["bathroom"], "has_door": true, "quadrant": "NW"}
+            {"room_no": "1", "beds_count": 1, "amenities": [], "has_door": true, "quadrant": "NE", "row": null, "side": null},
+            {"room_no": "5", "beds_count": 2, "amenities": ["bathroom"], "has_door": true, "quadrant": "NW", "row": null, "side": null}
+          ]
+        }
+
+        Example for an "H" shaped corridor (two stacked parallel corridors), each room MUST include row + side:
+        {
+          "corridor_detected": true,
+          "corridor_shape": "H",
+          "corridor_position": "center",
+          "rooms": [
+            {"room_no": "1", "beds_count": 2, "amenities": [], "has_door": true, "quadrant": null, "row": "top", "side": "left"},
+            {"room_no": "2", "beds_count": 2, "amenities": [], "has_door": true, "quadrant": null, "row": "top", "side": "right"},
+            {"room_no": "4", "beds_count": 2, "amenities": ["bathroom"], "has_door": true, "quadrant": null, "row": "middle", "side": "left"},
+            {"room_no": "7", "beds_count": 1, "amenities": [], "has_door": true, "quadrant": null, "row": "bottom", "side": "left"}
           ]
         }
         """
@@ -257,9 +291,43 @@ def send_registration_email():
 
 
 # ==========================================
-# 2B. CUSTOM EMAIL VERIFICATION (sent via Resend instead of Firebase's default sender —
-# better deliverability, less likely to land in spam, and matches HostelOM's branding)
+# 2C. PARENT CHECK-IN NOTIFICATION EMAIL
 # ==========================================
+@app.route('/notify-parent', methods=['POST'])
+def notify_parent():
+    if not RESEND_API_KEY:
+        return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY env var."}), 500
+
+    data = request.get_json(silent=True) or {}
+    parent_email = data.get('parentEmail', '').strip()
+    guest_name = data.get('guestName', 'Your child')
+    hostel_name = data.get('hostelName', 'the hostel')
+    if not parent_email:
+        return jsonify({"error": "parentEmail is required"}), 400
+
+    try:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": "HostelOM <onboarding@resend.dev>",  # change to your verified domain once set up
+                "to": [parent_email],
+                "subject": f"{guest_name} has checked in — {hostel_name}",
+                "html": f"""
+                    <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
+                        <h2 style="color:#4f46e5;">HostelOM — Check-in Update</h2>
+                        <p><b>{guest_name}</b> has successfully checked in / registered at <b>{hostel_name}</b>.</p>
+                        <p style="color:#64748b; font-size:12px;">This is an automated update sent because {guest_name} listed you as their parent/guardian contact during registration.</p>
+                    </div>
+                """
+            },
+            timeout=10
+        )
+        if resp.status_code >= 300:
+            return jsonify({"error": resp.text}), 500
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route('/send-verification-email', methods=['POST'])
 def send_verification_email():
     if not firebase_admin_app:
