@@ -275,7 +275,7 @@ def send_registration_email():
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
             json={
-                "from": "HostelOM <onboarding@resend.dev>",  # change to your verified domain once set up
+                "from": "HostelOM <noreply@ho-om.in>",  # change to your verified domain once set up
                 "to": [ADMIN_EMAIL],
                 "subject": f"New Booking Request — {guest_name} ({hostel_name})",
                 "html": f"<p>{guest_name} just submitted a Hostel Registration Form for <b>{hostel_name}</b>.</p>"
@@ -291,33 +291,31 @@ def send_registration_email():
 
 
 # ==========================================
-# 2C. PARENT CHECK-IN NOTIFICATION EMAIL
+# 2C. NEW MOBILE LOGIN NOTIFICATION TO ADMIN
 # ==========================================
-@app.route('/notify-parent', methods=['POST'])
-def notify_parent():
-    if not RESEND_API_KEY:
-        return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY env var."}), 500
+@app.route('/notify-admin-new-login', methods=['POST'])
+def notify_admin_new_login():
+    if not RESEND_API_KEY or not ADMIN_EMAIL:
+        return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY and ADMIN_EMAIL env vars."}), 500
 
     data = request.get_json(silent=True) or {}
-    parent_email = data.get('parentEmail', '').strip()
-    guest_name = data.get('guestName', 'Your child')
-    hostel_name = data.get('hostelName', 'the hostel')
-    if not parent_email:
-        return jsonify({"error": "parentEmail is required"}), 400
+    phone = data.get('phone', '').strip()
+    if not phone:
+        return jsonify({"error": "phone is required"}), 400
 
     try:
         resp = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
             json={
-                "from": "HostelOM <onboarding@resend.dev>",  # change to your verified domain once set up
-                "to": [parent_email],
-                "subject": f"{guest_name} has checked in — {hostel_name}",
+                "from": "HostelOM <noreply@ho-om.in>",
+                "to": [ADMIN_EMAIL],
+                "subject": f"New user logged in — {phone}",
                 "html": f"""
                     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
-                        <h2 style="color:#4f46e5;">HostelOM — Check-in Update</h2>
-                        <p><b>{guest_name}</b> has successfully checked in / registered at <b>{hostel_name}</b>.</p>
-                        <p style="color:#64748b; font-size:12px;">This is an automated update sent because {guest_name} listed you as their parent/guardian contact during registration.</p>
+                        <h2 style="color:#4f46e5;">HostelOM — New Mobile Login</h2>
+                        <p>A new user just signed in with mobile number: <b>{phone}</b></p>
+                        <p style="color:#64748b; font-size:12px;">Check the admin dashboard's "Users" tab for their location (if shared) and login history.</p>
                     </div>
                 """
             },
@@ -349,7 +347,7 @@ def send_verification_email():
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
             json={
-                "from": "HostelOM <onboarding@resend.dev>",  # change to your verified domain once set up
+                "from": "HostelOM <noreply@ho-om.in>",  # change to your verified domain once set up
                 "to": [email],
                 "subject": "Verify your email for HostelOM",
                 "html": f"""
@@ -473,7 +471,7 @@ def razorpay_verify():
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
                 json={
-                    "from": "HostelOM <onboarding@resend.dev>",
+                    "from": "HostelOM <noreply@ho-om.in>",
                     "to": [ADMIN_EMAIL],
                     "subject": f"✅ Payment Received — {guest.get('fullName', 'Guest')} ({booking_context.get('hostelName', '')})",
                     "html": f"<p>Booking <b>{booking_id}</b> paid successfully.</p>"
