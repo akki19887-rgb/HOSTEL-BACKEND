@@ -36,6 +36,14 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL")
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
 
+# 2FACTOR.IN — SMS OTP (DLT-compliant), replaces Firebase's default phone-auth SMS route which was
+# getting flagged as spam/blocked by Indian carriers. Get the API key from 2factor.in → Account
+# Summary, and the approved template name from SMS OTP → OTP Templates.
+#   TWOFACTOR_API_KEY        -> your 2Factor.in API key
+#   TWOFACTOR_TEMPLATE_NAME  -> the exact Template Name you created (e.g. "Ho-Om") — must be approved
+TWOFACTOR_API_KEY = os.environ.get("TWOFACTOR_API_KEY")
+TWOFACTOR_TEMPLATE_NAME = os.environ.get("TWOFACTOR_TEMPLATE_NAME", "Ho-Om")
+
 # FIREBASE ADMIN SDK — needed only for the custom (Resend-branded) email verification link below.
 # Firebase Console → Project Settings → Service Accounts → "Generate new private key" downloads a
 # JSON file. Paste its ENTIRE content as the value of a FIREBASE_SERVICE_ACCOUNT_JSON env var
@@ -497,13 +505,80 @@ def handle_unexpected_error(e):
     return jsonify({"error": "Something went wrong on the server. Please try again."}), 500
 
 
+# ==========================================
+# SMS OTP — send + verify, via 2Factor.in
+# ==========================================
+def _clean_10digit_phone(raw):
+    digits = ''.join(c for c in (raw or '') if c.isdigit())
+    return digits[-10:] if len(digits) >= 10 else None
+
+
+@app.route('/send-otp', methods=['POST'])
+def send_otp():
+    if not TWOFACTOR_API_KEY:
+        return jsonify({"error": "SMS OTP not configured on server. Set TWOFACTOR_API_KEY env var."}), 500
+
+    data = request.get_json(silent=True) or {}
+    phone_digits = _clean_10digit_phone(data.get('phone'))
+    if not phone_digits:
+        return jsonify({"error": "A valid 10-digit phone number is required"}), 400
+
+    try:
+        url = f"https://2factor.in/API/V1/{TWOFACTOR_API_KEY}/SMS/+91{phone_digits}/AUTOGEN/{TWOFACTOR_TEMPLATE_NAME}"
+        resp = requests.get(url, timeout=10)
+        result = resp.json()
+        if result.get('Status') != 'Success':
+            return jsonify({"error": result.get('Details', 'Failed to send OTP')}), 500
+        # "Details" here is 2Factor's session_id — the frontend must send it back on verify.
+        return jsonify({"session_id": result.get('Details')})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/verify-otp', methods=['POST'])
+def verify_otp():
+    if not TWOFACTOR_API_KEY:
+        return jsonify({"error": "SMS OTP not configured on server."}), 500
+    if not firebase_admin_app:
+        return jsonify({"error": "Firebase Admin SDK not configured on server. Set FIREBASE_SERVICE_ACCOUNT_JSON env var."}), 500
+
+    data = request.get_json(silent=True) or {}
+    session_id = (data.get('session_id') or '').strip()
+    otp = (data.get('otp') or '').strip()
+    phone_digits = _clean_10digit_phone(data.get('phone'))
+    if not session_id or not otp or not phone_digits:
+        return jsonify({"error": "session_id, otp and a valid phone are required"}), 400
+
+    try:
+        url = f"https://2factor.in/API/V1/{TWOFACTOR_API_KEY}/SMS/VERIFY/{session_id}/{otp}"
+        resp = requests.get(url, timeout=10)
+        result = resp.json()
+        if result.get('Status') != 'Success' or result.get('Details') != 'OTP Matched':
+            return jsonify({"error": "Incorrect or expired OTP. Please try again."}), 400
+
+        # OTP is correct — get (or create) a real Firebase Auth user for this phone number, and
+        # hand the frontend a custom token to sign in with. This keeps every existing uid-based
+        # Firestore rule and document untouched; only *how* the OTP was sent/verified changed.
+        e164_phone = "+91" + phone_digits
+        try:
+            fb_user = fb_auth.get_user_by_phone_number(e164_phone)
+        except fb_auth.UserNotFoundError:
+            fb_user = fb_auth.create_user(phone_number=e164_phone)
+        custom_token = fb_auth.create_custom_token(fb_user.uid)
+        token_str = custom_token.decode('utf-8') if isinstance(custom_token, bytes) else custom_token
+        return jsonify({"customToken": token_str, "uid": fb_user.uid, "phone": e164_phone})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         "status": "ok",
         "gemini_configured": bool(GEMINI_API_KEY),
         "email_configured": bool(RESEND_API_KEY and ADMIN_EMAIL),
-        "razorpay_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+        "razorpay_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
+        "sms_otp_configured": bool(TWOFACTOR_API_KEY and firebase_admin_app)
     })
 
 
