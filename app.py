@@ -212,21 +212,27 @@ def extract_aadhar():
         return jsonify({"error": "No image uploaded"}), 400
 
     file = request.files['aadhar_photo']
+    back_file = request.files.get('aadhar_photo_back')  # optional — many Aadhar cards only show
+    # name/DOB/photo on the front and put the address on the back, so front-only uploads often
+    # can't extract address at all. If the guest also uploaded the back, we read both.
 
     try:
         img = Image.open(file)
+        back_img = Image.open(back_file) if back_file else None
 
-        prompt = """Look at this photo of an Indian Aadhar card and extract the printed details EXACTLY
-        as written on the card. Do not guess or invent anything — if a field is not clearly visible,
-        leave it as an empty string "".
+        prompt = """Look at these photo(s) of an Indian Aadhar card (front side, and back side if a
+        second image is provided) and extract the printed details EXACTLY as written on the card.
+        Do not guess or invent anything — if a field is not clearly visible in either image, leave
+        it as an empty string "".
 
         Fields to extract:
-        1. full_name — the person's name as printed.
+        1. full_name — the person's name as printed (usually on the front).
         2. dob — date of birth, converted to YYYY-MM-DD format (Aadhar usually shows DD/MM/YYYY).
         3. gender — exactly "Male", "Female", or "Other" (Aadhar prints "M" or "F" or similar — convert it).
         4. aadhar_number — the 12-digit number, digits only, no spaces.
-        5. address — the full address block printed on the back of the card, as one single line
-           (join multi-line address with ", ").
+        5. address — the full address block, usually printed on the BACK of the card, as one single
+           line (join multi-line address with ", "). If only the front image was provided and no
+           address is visible on it, leave this empty rather than guessing.
         6. father_or_guardian_name — the name after "S/O", "D/O", "W/O", or "C/O" if present on the
            card (this is the father's/guardian's name) — WITHOUT the "S/O"/"D/O" prefix itself, just
            the name. Empty string if not present.
@@ -243,9 +249,10 @@ def extract_aadhar():
         """
 
         print("👉 AI (gemini-2.5-flash) is reading the Aadhar card...")
+        contents = [prompt, img] + ([back_img] if back_img else [])
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[prompt, img]
+            contents=contents
         )
 
         response_text = response.text.strip()
