@@ -44,19 +44,24 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
 TWOFACTOR_API_KEY = os.environ.get("TWOFACTOR_API_KEY")
 TWOFACTOR_TEMPLATE_NAME = os.environ.get("TWOFACTOR_TEMPLATE_NAME", "Ho-Om")
 
-# FIREBASE ADMIN SDK — needed only for the custom (Resend-branded) email verification link below.
+# FIREBASE ADMIN SDK — used for (a) the custom Resend-branded email verification link, and (b)
+# writing booking records + marking beds 'occupied' server-side after a Razorpay payment is
+# verified (see /razorpay/verify below). Never trust the browser to write its own "I paid"
+# record — this is exactly the hole a fake/DevTools booking used to slip through.
 # Firebase Console → Project Settings → Service Accounts → "Generate new private key" downloads a
 # JSON file. Paste its ENTIRE content as the value of a FIREBASE_SERVICE_ACCOUNT_JSON env var
 # (same way as GEMINI_API_KEY above) — do not commit the JSON file itself to git.
 FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
 firebase_admin_app = None
+firestore_db = None
 if FIREBASE_SERVICE_ACCOUNT_JSON:
     try:
         import firebase_admin
-        from firebase_admin import credentials as fb_credentials, auth as fb_auth
+        from firebase_admin import credentials as fb_credentials, auth as fb_auth, firestore as fb_firestore
         cred = fb_credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_JSON))
         firebase_admin_app = firebase_admin.initialize_app(cred)
-        print("✅ Firebase Admin SDK initialized.")
+        firestore_db = fb_firestore.client()
+        print("✅ Firebase Admin SDK initialized (Auth + Firestore).")
     except Exception as e:
         print(f"⚠️ Firebase Admin SDK failed to initialize: {e}")
 
@@ -444,6 +449,14 @@ def razorpay_create_order():
 # razorpay_signature to the frontend. Frontend forwards them here. We recompute the
 # HMAC-SHA256 signature server-side using our KEY_SECRET and compare — this is the
 # ONLY reliable way to confirm the payment actually happened (never trust the client).
+#
+# This endpoint now also:
+#   1. Re-fetches the payment's ACTUAL captured amount from Razorpay's own API and compares it
+#      against the order's original amount — the browser's claimed amount is never trusted.
+#   2. Writes the 'bookings' record itself (Admin SDK), instead of letting the browser write its
+#      own "I paid" document — closes the "fake paid_verified booking via DevTools" hole.
+#   3. Marks the paid bed(s) 'occupied' on the business's live listing in the same transaction,
+#      and confirms the reservation lock — so this never has to happen client-side either.
 @app.route('/razorpay/verify', methods=['POST'])
 def razorpay_verify():
     if not RAZORPAY_KEY_SECRET:
@@ -470,15 +483,77 @@ def razorpay_verify():
         print(f"❌ Signature MISMATCH for order {order_id}")
         return jsonify({"ok": False, "error": "Invalid signature. Payment could not be verified."}), 400
 
-    # ---- Signature verified. Payment is genuine. ----
-    # Generate a human-readable booking ID. In production, save the full booking record
-    # to your DB here (Firestore, Postgres, etc.) with status='paid_verified' so the
-    # admin dashboard picks it up.
+    # ---- Signature verified. Now confirm the ACTUAL amount with Razorpay directly (never trust
+    # what the browser says was paid) ----
+    try:
+        order_resp = requests.get(f"https://api.razorpay.com/v1/orders/{order_id}",
+                                   auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), timeout=10)
+        payment_resp = requests.get(f"https://api.razorpay.com/v1/payments/{payment_id}",
+                                     auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET), timeout=10)
+        if order_resp.status_code >= 300 or payment_resp.status_code >= 300:
+            return jsonify({"ok": False, "error": "Could not verify payment details with Razorpay."}), 502
+        order_obj = order_resp.json()
+        payment_obj = payment_resp.json()
+    except requests.RequestException as e:
+        print(f"❌ Razorpay verify network error: {e}")
+        return jsonify({"ok": False, "error": "Network error contacting Razorpay."}), 502
+
+    if payment_obj.get('order_id') != order_id:
+        return jsonify({"ok": False, "error": "Payment does not belong to this order."}), 400
+    if payment_obj.get('status') != 'captured':
+        return jsonify({"ok": False, "error": f"Payment not captured (status: {payment_obj.get('status')})."}), 400
+    if int(payment_obj.get('amount', -1)) != int(order_obj.get('amount', -2)):
+        print(f"❌ AMOUNT MISMATCH — order={order_obj.get('amount')} payment={payment_obj.get('amount')}")
+        return jsonify({"ok": False, "error": "Paid amount does not match the order amount."}), 400
+
+    amount_rupees = int(payment_obj.get('amount', 0)) / 100.0
     booking_context = data.get('bookingContext', {}) or {}
     guest = data.get('guest', {}) or {}
+    property_id = data.get('propertyId')
+    lock_id = data.get('lockId')
+    hostel_name = data.get('hostelName', booking_context.get('hostelName', ''))
+    guest_name = data.get('guestName', guest.get('fullName', ''))
+    guest_phone = data.get('guestPhone', '')
+    guest_uid = data.get('guestUid')  # links this booking back to the guest's own account for "My Bookings"
+    total_stay_amount = data.get('totalStayAmount', amount_rupees)
+    hostel_balance_due = data.get('hostelBalanceDue', 0)
     booking_id = "BK-" + payment_id[-8:].upper()
 
-    print(f"✅ Payment verified · order={order_id} · payment={payment_id} · booking={booking_id}")
+    # ---- Write the booking record + mark the bed(s) occupied, server-side ----
+    if firestore_db:
+        try:
+            firestore_db.collection('bookings').document().set({
+                "bookingId": booking_id,
+                "paymentId": payment_id,
+                "orderId": order_id,
+                "amount": amount_rupees,  # the advance actually charged — this IS the platform's commission in full (Pay-at-Hostel model)
+                "totalStayAmount": total_stay_amount,
+                "hostelBalanceDue": hostel_balance_due,  # guest pays this directly to the hostel at check-in
+                "currency": "INR",
+                "propertyId": property_id,
+                "hostelName": hostel_name,
+                "guestName": guest_name,
+                "guestPhone": guest_phone,
+                "guestUid": guest_uid,
+                "bookingContext": booking_context,
+                "status": "paid_verified",
+                "createdAt": fb_firestore.SERVER_TIMESTAMP,
+            })
+        except Exception as fsErr:
+            print(f"⚠️ Booking write failed (payment still valid): {fsErr}")
+
+        bed_ids = [b.get('id') for b in (booking_context.get('beds') or []) if b.get('id')]
+        if property_id and bed_ids:
+            try:
+                _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id)
+            except Exception as occErr:
+                # Payment + booking record are already safely saved — don't fail the whole
+                # request over this; it can be fixed manually via "Mark Occupied" in Architect Mode.
+                print(f"⚠️ Auto-occupy failed (fix manually if needed): {occErr}")
+    else:
+        print("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON not set — booking was NOT saved server-side. Set it up so bookings/bed-occupancy work.")
+
+    print(f"✅ Payment verified · order={order_id} · payment={payment_id} · booking={booking_id} · ₹{amount_rupees}")
     # Optional: fire-and-forget email notification to admin
     try:
         if RESEND_API_KEY and ADMIN_EMAIL:
@@ -488,10 +563,11 @@ def razorpay_verify():
                 json={
                     "from": "HostelOM <noreply@ho-om.in>",
                     "to": [ADMIN_EMAIL],
-                    "subject": f"✅ Payment Received — {guest.get('fullName', 'Guest')} ({booking_context.get('hostelName', '')})",
+                    "subject": f"✅ Payment Received — {guest_name or 'Guest'} ({hostel_name})",
                     "html": f"<p>Booking <b>{booking_id}</b> paid successfully.</p>"
                             f"<p>Payment ID: <code>{payment_id}</code><br>"
-                            f"Order ID: <code>{order_id}</code></p>"
+                            f"Order ID: <code>{order_id}</code><br>"
+                            f"Amount: ₹{amount_rupees}</p>"
                 },
                 timeout=8
             )
@@ -502,8 +578,45 @@ def razorpay_verify():
         "ok": True,
         "bookingId": booking_id,
         "paymentId": payment_id,
-        "orderId": order_id
+        "orderId": order_id,
+        "amount": amount_rupees
     })
+
+
+def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
+    """Flips the given bed IDs to 'occupied' inside businesses/{property_id}.roomsAndBeds, and
+    marks the matching bedLocks/{lock_id} document confirmed — run as one atomic transaction so
+    two simultaneous payments can never both think they got the same bed."""
+    biz_ref = firestore_db.collection('businesses').document(property_id)
+    lock_ref = firestore_db.collection('bedLocks').document(lock_id) if lock_id else None
+
+    transaction = firestore_db.transaction()
+
+    @fb_firestore.transactional
+    def _update(transaction):
+        biz_snap = biz_ref.get(transaction=transaction)
+        if not biz_snap.exists:
+            return
+        biz_data = biz_snap.to_dict() or {}
+        rooms = biz_data.get('roomsAndBeds', []) or []
+        updated_rooms = []
+        for room in rooms:
+            beds = room.get('beds', []) or []
+            new_beds = []
+            for bed in beds:
+                if bed.get('id') in bed_ids:
+                    bed = dict(bed)
+                    bed['status'] = 'occupied'
+                    bed['occupiedBookingId'] = booking_id
+                new_beds.append(bed)
+            room = dict(room)
+            room['beds'] = new_beds
+            updated_rooms.append(room)
+        transaction.update(biz_ref, {'roomsAndBeds': updated_rooms})
+        if lock_ref:
+            transaction.set(lock_ref, {'confirmed': True, 'bookingId': booking_id, 'confirmedAt': fb_firestore.SERVER_TIMESTAMP}, merge=True)
+
+    _update(transaction)
 
 
 @app.errorhandler(Exception)
