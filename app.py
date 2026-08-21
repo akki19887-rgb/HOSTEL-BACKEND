@@ -8,8 +8,23 @@ import hashlib
 import requests
 from PIL import Image
 
+from datetime import timedelta
+from security import (
+    require_auth, require_admin, build_limiter,
+    otp_attempt_allowed, otp_attempt_clear,
+    compute_booking_amount, ADVANCE_PERCENT,
+)
+
 app = Flask(__name__)
-CORS(app)
+
+# Was CORS(app) — that allowed EVERY website on the internet to call these
+# endpoints from a user's browser. Now only your own domain can.
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get(
+    "ALLOWED_ORIGINS", "https://ho-om.in,https://www.ho-om.in"
+).split(",") if o.strip()]
+CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=False)
+
+limiter = build_limiter(app)
 
 # API KEY ab environment variable se aayegi (code me hardcoded nahi rahegi).
 # Terminal me run karne se pehle set karein:
@@ -59,7 +74,9 @@ if FIREBASE_SERVICE_ACCOUNT_JSON:
         import firebase_admin
         from firebase_admin import credentials as fb_credentials, auth as fb_auth, firestore as fb_firestore
         cred = fb_credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_JSON))
-        firebase_admin_app = firebase_admin.initialize_app(cred)
+        firebase_admin_app = firebase_admin.initialize_app(cred, {
+            'storageBucket': os.environ.get('FIREBASE_STORAGE_BUCKET', '')
+        })
         firestore_db = fb_firestore.client()
         print("✅ Firebase Admin SDK initialized (Auth + Firestore).")
     except Exception as e:
@@ -80,6 +97,8 @@ if SENTRY_DSN:
 # 1. EXACT 2D MAP AUTO-EXTRACTION
 # ==========================================
 @app.route('/process-rough-layout', methods=['POST'])
+@limiter.limit("20 per hour")
+@require_auth
 def process_rough_layout():
     print("\n" + "="*50)
     print("🟢 START: AI Map Extraction Started!")
@@ -209,6 +228,8 @@ def process_rough_layout():
 # 1B. AADHAR CARD AUTO-FILL (extracts fields from an Aadhar photo for the registration form)
 # ==========================================
 @app.route('/extract-aadhar', methods=['POST'])
+@limiter.limit("15 per hour")
+@require_auth
 def extract_aadhar():
     print("\n" + "="*50)
     print("🟢 START: Aadhar extraction started!")
@@ -281,6 +302,8 @@ def extract_aadhar():
 # 2. EMAIL NOTIFICATION TO ADMIN (New Booking / Registration Form)
 # ==========================================
 @app.route('/send-registration-email', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_auth
 def send_registration_email():
     if not RESEND_API_KEY or not ADMIN_EMAIL:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY and ADMIN_EMAIL env vars."}), 500
@@ -314,6 +337,8 @@ def send_registration_email():
 # 2C. NEW MOBILE LOGIN NOTIFICATION TO ADMIN
 # ==========================================
 @app.route('/notify-admin-new-login', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_auth
 def notify_admin_new_login():
     if not RESEND_API_KEY or not ADMIN_EMAIL:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY and ADMIN_EMAIL env vars."}), 500
@@ -347,16 +372,20 @@ def notify_admin_new_login():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 @app.route('/send-verification-email', methods=['POST'])
+@limiter.limit("5 per hour")
+@require_auth
 def send_verification_email():
     if not firebase_admin_app:
         return jsonify({"error": "Firebase Admin SDK not configured on server. Set FIREBASE_SERVICE_ACCOUNT_JSON env var."}), 500
     if not RESEND_API_KEY:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY env var."}), 500
 
-    data = request.get_json(silent=True) or {}
-    email = data.get('email', '').strip()
+    # Use the SIGNED-IN user's own email, never one supplied in the request body —
+    # otherwise anyone could generate real Firebase verification links for
+    # addresses they don't control.
+    email = (request.claims.get('email') or '').strip()
     if not email:
-        return jsonify({"error": "email is required"}), 400
+        return jsonify({"error": "No email address on this account."}), 400
 
     try:
         # Firebase generates the actual secure verification link (same one it would've emailed
@@ -396,20 +425,43 @@ def send_verification_email():
 # Orders API server-side (using KEY_SECRET which must stay on the server) and return
 # only the order_id + public key_id back to the browser.
 @app.route('/razorpay/create-order', methods=['POST'])
+@limiter.limit("20 per hour")
+@require_auth
 def razorpay_create_order():
     if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
         return jsonify({"error": "Razorpay not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET env vars."}), 500
 
-    data = request.get_json(silent=True) or {}
-    amount_paise = int(data.get('amount', 0))      # already in paise from frontend
-    currency = data.get('currency', 'INR')
-    notes = data.get('notes', {}) or {}
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured (Firestore unavailable)."}), 500
 
-    if amount_paise <= 0:
-        return jsonify({"error": "Amount must be greater than zero."}), 400
-    # Sanity cap: max ₹5,00,000 per single order (prevents accidental huge charges)
-    if amount_paise > 50000000:
-        return jsonify({"error": "Amount exceeds allowed limit."}), 400
+    data = request.get_json(silent=True) or {}
+    property_id = data.get('propertyId')
+    bed_ids = data.get('bedIds') or []
+    currency = 'INR'
+
+    # THE BROWSER NO LONGER SENDS AN AMOUNT AT ALL.
+    # It used to, and the server accepted it — so a DevTools edit could turn a
+    # ₹7,000 advance into ₹1, and the signature would still verify (a real ₹1
+    # payment against a real ₹1 order), producing a paid_verified booking with
+    # the bed marked occupied. The price now comes from the live bed data in
+    # Firestore on every single order.
+    try:
+        amount_paise, total_rupees, owner_uid = compute_booking_amount(
+            firestore_db, property_id, bed_ids)
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+
+    # Everything needed to write the booking later is stamped into the order's
+    # notes, server-side. /razorpay/verify reads it from here instead of from the
+    # request body, which the browser controls.
+    notes = {
+        "app": "HostelOM",
+        "propertyId": property_id or "",
+        "bedIds": ",".join(bed_ids),
+        "guestUid": request.uid,
+        "ownerUid": owner_uid or "",
+        "expectedPaise": str(amount_paise),
+    }
 
     try:
         resp = requests.post(
@@ -432,7 +484,9 @@ def razorpay_create_order():
             "orderId": order.get("id"),
             "keyId": RAZORPAY_KEY_ID,      # public key — safe to expose
             "amount": order.get("amount"),
-            "currency": order.get("currency")
+            "currency": order.get("currency"),
+            "totalStayAmount": total_rupees,
+            "advancePercent": ADVANCE_PERCENT
         })
     except requests.RequestException as e:
         print(f"❌ Razorpay network error: {e}")
@@ -458,6 +512,8 @@ def razorpay_create_order():
 #   3. Marks the paid bed(s) 'occupied' on the business's live listing in the same transaction,
 #      and confirms the reservation lock — so this never has to happen client-side either.
 @app.route('/razorpay/verify', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_auth
 def razorpay_verify():
     if not RAZORPAY_KEY_SECRET:
         return jsonify({"ok": False, "error": "Razorpay not configured."}), 500
@@ -506,15 +562,42 @@ def razorpay_verify():
         print(f"❌ AMOUNT MISMATCH — order={order_obj.get('amount')} payment={payment_obj.get('amount')}")
         return jsonify({"ok": False, "error": "Paid amount does not match the order amount."}), 400
 
+    # ---- Identity of this booking comes from the ORDER NOTES we wrote ourselves
+    # at create time — NOT from the request body. Previously propertyId and
+    # guestUid were read straight off the browser's JSON, so a caller could
+    # attribute a payment to any property or any user account they liked. ----
+    order_notes = order_obj.get('notes') or {}
+    property_id = order_notes.get('propertyId') or None
+    owner_uid = order_notes.get('ownerUid') or None
+    guest_uid = order_notes.get('guestUid') or None
+    bed_ids_from_order = [b for b in (order_notes.get('bedIds') or '').split(',') if b]
+
+    if guest_uid != request.uid:
+        return jsonify({"ok": False, "error": "This order belongs to a different account."}), 403
+
+    try:
+        expected_paise = int(order_notes.get('expectedPaise', -1))
+    except (TypeError, ValueError):
+        expected_paise = -1
+    if int(payment_obj.get('amount', 0)) != expected_paise:
+        print(f"❌ PRICE TAMPER — paid={payment_obj.get('amount')} expected={expected_paise}")
+        return jsonify({"ok": False, "error": "Paid amount does not match the server-computed price."}), 400
+
+    # IDEMPOTENCY: Razorpay retries, and users double-tap. Without this one
+    # payment could produce two booking records.
+    if firestore_db:
+        dupe = firestore_db.collection('bookings').where('paymentId', '==', payment_id).limit(1).get()
+        if len(dupe) > 0:
+            d0 = dupe[0].to_dict() or {}
+            return jsonify({"ok": True, "bookingId": d0.get("bookingId"), "amount": d0.get("amount")})
+
     amount_rupees = int(payment_obj.get('amount', 0)) / 100.0
     booking_context = data.get('bookingContext', {}) or {}
     guest = data.get('guest', {}) or {}
-    property_id = data.get('propertyId')
     lock_id = data.get('lockId')
     hostel_name = data.get('hostelName', booking_context.get('hostelName', ''))
     guest_name = data.get('guestName', guest.get('fullName', ''))
     guest_phone = data.get('guestPhone', '')
-    guest_uid = data.get('guestUid')  # links this booking back to the guest's own account for "My Bookings"
     total_stay_amount = data.get('totalStayAmount', amount_rupees)
     hostel_balance_due = data.get('hostelBalanceDue', 0)
     booking_id = "BK-" + payment_id[-8:].upper()
@@ -535,6 +618,11 @@ def razorpay_verify():
                 "guestName": guest_name,
                 "guestPhone": guest_phone,
                 "guestUid": guest_uid,
+                # Denormalised so the owner's "Property Bookings" tab can query
+                # this collection. A rule that resolves the owner via get() on
+                # another document cannot be evaluated on a QUERY, only on a
+                # single-doc read — which is why that tab was failing before.
+                "ownerUid": owner_uid,
                 "bookingContext": booking_context,
                 "status": "paid_verified",
                 "createdAt": fb_firestore.SERVER_TIMESTAMP,
@@ -542,7 +630,8 @@ def razorpay_verify():
         except Exception as fsErr:
             print(f"⚠️ Booking write failed (payment still valid): {fsErr}")
 
-        bed_ids = [b.get('id') for b in (booking_context.get('beds') or []) if b.get('id')]
+        # From the signed order, not from the request body.
+        bed_ids = bed_ids_from_order or [b.get('id') for b in (booking_context.get('beds') or []) if b.get('id')]
         if property_id and bed_ids:
             try:
                 _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id)
@@ -634,6 +723,7 @@ def _clean_10digit_phone(raw):
 
 
 @app.route('/send-otp', methods=['POST'])
+@limiter.limit("3 per hour;10 per day")
 def send_otp():
     if not TWOFACTOR_API_KEY:
         return jsonify({"error": "SMS OTP not configured on server. Set TWOFACTOR_API_KEY env var."}), 500
@@ -642,6 +732,12 @@ def send_otp():
     phone_digits = _clean_10digit_phone(data.get('phone'))
     if not phone_digits:
         return jsonify({"error": "A valid 10-digit phone number is required"}), 400
+
+    # Per-NUMBER cap on top of the per-IP limit above. Without this, a script that
+    # rotates IPs could still bomb one victim's phone with SMS — each one billed
+    # to your 2Factor account.
+    if not otp_attempt_allowed(f"send:{phone_digits}"):
+        return jsonify({"error": "Too many OTP requests for this number. Please try again later."}), 429
 
     try:
         url = f"https://2factor.in/API/V1/{TWOFACTOR_API_KEY}/SMS/+91{phone_digits}/AUTOGEN/{TWOFACTOR_TEMPLATE_NAME}"
@@ -656,6 +752,7 @@ def send_otp():
 
 
 @app.route('/verify-otp', methods=['POST'])
+@limiter.limit("20 per hour")
 def verify_otp():
     if not TWOFACTOR_API_KEY:
         return jsonify({"error": "SMS OTP not configured on server."}), 500
@@ -668,6 +765,11 @@ def verify_otp():
     phone_digits = _clean_10digit_phone(data.get('phone'))
     if not session_id or not otp or not phone_digits:
         return jsonify({"error": "session_id, otp and a valid phone are required"}), 400
+
+    # Five wrong guesses kills the session. A 4-digit OTP is only 10,000
+    # combinations — trivially brute-forceable without this.
+    if not otp_attempt_allowed(session_id):
+        return jsonify({"error": "Too many incorrect attempts. Please request a new OTP."}), 429
 
     try:
         url = f"https://2factor.in/API/V1/{TWOFACTOR_API_KEY}/SMS/VERIFY/{session_id}/{otp}"
@@ -684,11 +786,141 @@ def verify_otp():
             fb_user = fb_auth.get_user_by_phone_number(e164_phone)
         except fb_auth.UserNotFoundError:
             fb_user = fb_auth.create_user(phone_number=e164_phone)
+        otp_attempt_clear(session_id)
         custom_token = fb_auth.create_custom_token(fb_user.uid)
         token_str = custom_token.decode('utf-8') if isinstance(custom_token, bytes) else custom_token
         return jsonify({"customToken": token_str, "uid": fb_user.uid, "phone": e164_phone})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ==========================================
+# 6. SECURE FILE ACCESS (Aadhaar / PDFs / payment proofs)
+# ==========================================
+# The Storage rules now set `allow read: if false` on every folder containing
+# personal data. Previously they said `request.auth != null`, which meant ANY
+# account — including one made in thirty seconds with a throwaway number — could
+# download every guest's Aadhaar photo in the whole bucket.
+#
+# Files are now reachable only through here, and only by admin or by the owner of
+# the specific hostel that file belongs to. The link expires in 10 minutes.
+@app.route('/secure-file', methods=['GET'])
+@limiter.limit("60 per hour")
+@require_auth
+def secure_file():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    from firebase_admin import storage as fb_storage
+
+    path = (request.args.get('path') or '').strip()
+    property_id = (request.args.get('propertyId') or '').strip()
+
+    ALLOWED_PREFIXES = ('guestAadharDocs/', 'guestRegistrationPdfs/',
+                        'upiPaymentProofs/', 'payoutDocs/')
+    if not path.startswith(ALLOWED_PREFIXES) or '..' in path:
+        return jsonify({"error": "Invalid file path."}), 400
+
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    if not is_admin:
+        if not property_id:
+            return jsonify({"error": "propertyId is required."}), 400
+        biz = firestore_db.collection('businesses').document(property_id).get()
+        if not biz.exists or (biz.to_dict() or {}).get('ownerId') != request.uid:
+            return jsonify({"error": "You are not authorised to view this file."}), 403
+
+    try:
+        blob = fb_storage.bucket().blob(path)
+        if not blob.exists():
+            return jsonify({"error": "File not found."}), 404
+        url = blob.generate_signed_url(expiration=timedelta(minutes=10), method='GET')
+        return jsonify({"url": url, "expiresInMinutes": 10})
+    except Exception as e:
+        print(f"❌ secure-file error: {e}")
+        return jsonify({"error": "Could not generate a link for this file."}), 500
+
+
+# ==========================================
+# 7. ONE-TIME DATA MIGRATION (admin only)
+# ==========================================
+# The new Firestore rules need an `ownerUid` field on every booking and payout.
+# Rather than making you run a Node script locally, just open this URL once while
+# logged in as admin — the app will fetch it with your admin token.
+#
+# Safe to run more than once: documents that already have ownerUid are skipped.
+@app.route('/admin/backfill-owner-uid', methods=['POST'])
+@limiter.limit("5 per hour")
+@require_admin
+def backfill_owner_uid():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    owner_cache = {}
+    def owner_of(business_id):
+        if not business_id:
+            return None
+        if business_id not in owner_cache:
+            snap = firestore_db.collection('businesses').document(business_id).get()
+            owner_cache[business_id] = (snap.to_dict() or {}).get('ownerId') if snap.exists else None
+        return owner_cache[business_id]
+
+    report = {"bookings": {"updated": 0, "skipped": 0, "noOwner": 0},
+              "payouts": {"updated": 0, "skipped": 0, "noOwner": 0}}
+
+    for doc in firestore_db.collection('bookings').stream():
+        d = doc.to_dict() or {}
+        if d.get('ownerUid'):
+            report["bookings"]["skipped"] += 1
+            continue
+        uid = owner_of(d.get('propertyId'))
+        if not uid:
+            report["bookings"]["noOwner"] += 1
+            continue
+        doc.reference.update({'ownerUid': uid})
+        report["bookings"]["updated"] += 1
+
+    for doc in firestore_db.collection('payouts').stream():
+        d = doc.to_dict() or {}
+        if d.get('ownerUid'):
+            report["payouts"]["skipped"] += 1
+            continue
+        uid = owner_of(d.get('businessId'))
+        if not uid:
+            report["payouts"]["noOwner"] += 1
+            continue
+        doc.reference.update({'ownerUid': uid})
+        report["payouts"]["updated"] += 1
+
+    print(f"✅ Backfill complete: {report}")
+    return jsonify({"ok": True, "report": report})
+
+
+# ==========================================
+# 8. EXPIRED BED-LOCK CLEANUP (admin only)
+# ==========================================
+# Bed locks have a 15-minute ceiling enforced by the rules, but nothing deletes
+# them once they lapse. Call this from a free cron service (cron-job.org) every
+# 10 minutes, or hit it manually if beds look stuck.
+@app.route('/admin/cleanup-locks', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_admin
+def cleanup_locks():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    removed = 0
+    for doc in firestore_db.collection('bedLocks').stream():
+        d = doc.to_dict() or {}
+        if d.get('confirmed'):
+            continue    # a confirmed lock is a real booking — never touch it
+        exp = d.get('expiresAt')
+        try:
+            if exp and hasattr(exp, 'timestamp') and exp < now:
+                doc.reference.delete()
+                removed += 1
+        except Exception:
+            continue
+    return jsonify({"ok": True, "removed": removed})
 
 
 @app.route('/health', methods=['GET'])
@@ -698,7 +930,9 @@ def health_check():
         "gemini_configured": bool(GEMINI_API_KEY),
         "email_configured": bool(RESEND_API_KEY and ADMIN_EMAIL),
         "razorpay_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
-        "sms_otp_configured": bool(TWOFACTOR_API_KEY and firebase_admin_app)
+        "sms_otp_configured": bool(TWOFACTOR_API_KEY and firebase_admin_app),
+        "storage_bucket_configured": bool(os.environ.get("FIREBASE_STORAGE_BUCKET")),
+        "allowed_origins": ALLOWED_ORIGINS
     })
 
 
