@@ -795,7 +795,458 @@ def verify_otp():
 
 
 # ==========================================
-# 6. SECURE FILE ACCESS (Aadhaar / PDFs / payment proofs)
+# 6. NOTIFICATIONS — the app's backbone
+# ==========================================
+# Notifications used to be written straight from the browser with `allow create: if true`,
+# which meant anyone on the internet could stuff junk into the collection. Every notification
+# now goes through here instead: the caller proves who they are, the server decides the
+# audience, and the Admin SDK writes it (bypassing rules entirely).
+#
+# `audience` controls who sees it in their feed:
+#   'admin'    — only the HO-Om admin console
+#   'owner'    — one specific hostel owner (ownerUid required)
+#   'guest'    — one specific guest (guestUid required)
+#   'allOwners'/'allGuests' — broadcast, admin only
+
+import re as _re
+
+_CONTACT_PATTERNS = [
+    _re.compile(r'(?:\+?91[\s-]*)?[6-9]\d{9}'),                       # Indian mobile
+    _re.compile(r'\b\d[\d\s\-().]{8,}\d\b'),                          # spaced/dashed digits
+    _re.compile(r'[\w.+-]+@[\w-]+\.[\w.]+'),                          # email
+    _re.compile(r'(?:wa\.me|whatsapp|telegram|t\.me|insta(?:gram)?)', _re.I),
+]
+
+
+def _contains_contact_info(text):
+    stripped = _re.sub(r'[\s\-().]', '', text or '')
+    for pat in _CONTACT_PATTERNS:
+        if pat.search(text or '') or pat.search(stripped):
+            return True
+    return False
+
+
+_ALLOWED_AUDIENCES = {'admin', 'owner', 'guest', 'allOwners', 'allGuests'}
+_BROADCAST_AUDIENCES = {'allOwners', 'allGuests'}
+
+
+def _write_notification(payload):
+    """Single place every notification is created, so the shape stays consistent."""
+    doc = {
+        "type": payload.get("type") or "general",
+        "audience": payload.get("audience") or "admin",
+        "message": (payload.get("message") or "")[:2000],
+        "title": (payload.get("title") or "")[:200],
+        "ownerUid": payload.get("ownerUid"),
+        "guestUid": payload.get("guestUid"),
+        "propertyId": payload.get("propertyId"),
+        "bookingId": payload.get("bookingId"),
+        "read": False,
+        "createdAt": _dt_now_iso(),
+    }
+    firestore_db.collection("notifications").add(doc)
+    # Fire the phone-level push too. Without this the whole messenger is useless: an owner
+    # is not sitting with the app open, so a message that only lands in the in-app bell is
+    # a message they see hours later, by which time the guest has booked elsewhere.
+    try:
+        _send_push_for(doc)
+    except Exception as e:
+        print(f"⚠️ push failed (notification still saved): {e}")
+    return doc
+
+
+# ==========================================
+# PUSH NOTIFICATIONS (FCM)
+# ==========================================
+# Device tokens live in deviceTokens/{token}. One user can have several (phone, laptop,
+# installed PWA), so we look them up by uid and send to all of them.
+
+def _tokens_for_uid(uid):
+    if not uid:
+        return []
+    out = []
+    for d in firestore_db.collection('deviceTokens').where('uid', '==', uid).stream():
+        t = (d.to_dict() or {}).get('token')
+        if t:
+            out.append(t)
+    return out
+
+
+def _tokens_for_role(role):
+    """role: 'owner' | 'guest' — used for the allOwners / allGuests broadcasts."""
+    out = []
+    for d in firestore_db.collection('deviceTokens').where('role', '==', role).stream():
+        t = (d.to_dict() or {}).get('token')
+        if t:
+            out.append(t)
+    return out
+
+
+def _prune_dead_tokens(tokens, responses):
+    """A token dies when the user uninstalls or clears data. Delete it so we stop retrying."""
+    for token, resp in zip(tokens, responses):
+        if resp.success:
+            continue
+        err = str(getattr(resp, 'exception', '') or '')
+        if 'not-registered' in err or 'invalid-argument' in err or 'Requested entity was not found' in err:
+            try:
+                firestore_db.collection('deviceTokens').document(token).delete()
+            except Exception:
+                pass
+
+
+def _send_push_for(doc):
+    if not firestore_db:
+        return
+    from firebase_admin import messaging
+
+    audience = doc.get('audience')
+    if audience == 'owner':
+        tokens = _tokens_for_uid(doc.get('ownerUid'))
+    elif audience == 'guest':
+        tokens = _tokens_for_uid(doc.get('guestUid'))
+    elif audience == 'allOwners':
+        tokens = _tokens_for_role('owner')
+    elif audience == 'allGuests':
+        tokens = _tokens_for_role('guest')
+    else:
+        return   # admin-feed entries don't need to buzz anyone's phone
+
+    tokens = list(dict.fromkeys(tokens))[:500]   # de-dupe; FCM caps a multicast at 500
+    if not tokens:
+        return
+
+    title = doc.get('title') or 'HO-Om'
+    body = (doc.get('message') or '')[:180]
+
+    message = messaging.MulticastMessage(
+        tokens=tokens,
+        notification=messaging.Notification(title=title, body=body),
+        data={
+            "type": str(doc.get('type') or ''),
+            "bookingId": str(doc.get('bookingId') or ''),
+            "propertyId": str(doc.get('propertyId') or ''),
+            "url": "/",
+        },
+        webpush=messaging.WebpushConfig(
+            notification=messaging.WebpushNotification(
+                title=title, body=body,
+                icon='/icon-192.png', badge='/icon-192.png',
+                tag=str(doc.get('bookingId') or doc.get('type') or 'hoom'),
+            ),
+            fcm_options=messaging.WebpushFCMOptions(link='https://ho-om.in/'),
+        ),
+    )
+    resp = messaging.send_each_for_multicast(message)
+    print(f"📲 push: {resp.success_count}/{len(tokens)} delivered")
+    _prune_dead_tokens(tokens, resp.responses)
+
+
+@app.route('/push/register', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_auth
+def push_register():
+    """Called by the app after the user grants notification permission."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get('token') or '').strip()
+    if not token or len(token) > 4096:
+        return jsonify({"error": "A valid token is required."}), 400
+
+    # Role is derived server-side, NOT taken from the request body. Previously the browser
+    # chose it, so a guest could register as 'owner' and start receiving every allOwners
+    # broadcast — including anything commercially sensitive you send to your hostel owners.
+    if firestore_db.collection('admin').document(request.uid).get().exists:
+        role = 'admin'
+    elif len(firestore_db.collection('businesses').where('ownerId', '==', request.uid).limit(1).get()) > 0:
+        role = 'owner'
+    else:
+        role = 'guest'
+
+    # Keyed by token so re-registering the same device just refreshes it rather than
+    # piling up duplicates that would make one phone buzz five times per message.
+    firestore_db.collection('deviceTokens').document(token).set({
+        "token": token,
+        "uid": request.uid,
+        "role": role,
+        "updatedAt": _dt_now_iso(),
+    }, merge=True)
+    return jsonify({"ok": True})
+
+
+@app.route('/push/unregister', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_auth
+def push_unregister():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    token = ((request.get_json(silent=True) or {}).get('token') or '').strip()
+    if token:
+        try:
+            firestore_db.collection('deviceTokens').document(token).delete()
+        except Exception:
+            pass
+    return jsonify({"ok": True})
+
+
+@app.route('/push/test', methods=['POST'])
+@limiter.limit("20 per hour")
+@require_auth
+def push_test():
+    """Sends a push to the caller's own devices, so you can verify setup end to end."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    from firebase_admin import messaging
+
+    tokens = _tokens_for_uid(request.uid)
+    if not tokens:
+        return jsonify({"ok": False, "error": "No device registered for this account yet."}), 400
+
+    resp = messaging.send_each_for_multicast(messaging.MulticastMessage(
+        tokens=tokens,
+        notification=messaging.Notification(
+            title="HO-Om test", body="Push notifications kaam kar rahe hain ✅"),
+        webpush=messaging.WebpushConfig(
+            notification=messaging.WebpushNotification(
+                title="HO-Om test", body="Push notifications kaam kar rahe hain ✅",
+                icon='/icon-192.png'),
+            fcm_options=messaging.WebpushFCMOptions(link='https://ho-om.in/'),
+        ),
+    ))
+    _prune_dead_tokens(tokens, resp.responses)
+    return jsonify({"ok": True, "devices": len(tokens), "delivered": resp.success_count})
+
+
+def _dt_now_iso():
+    import datetime as _d
+    return _d.datetime.now(_d.timezone.utc).isoformat()
+
+
+@app.route('/notify', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_auth
+def notify():
+    """
+    Called by the app for ordinary events (new booking, new chat message, visit request).
+    A normal user may NOT broadcast, and may not forge an audience they don't belong to.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    audience = data.get("audience") or "admin"
+    if audience not in _ALLOWED_AUDIENCES:
+        return jsonify({"error": "Invalid audience."}), 400
+
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    if audience in _BROADCAST_AUDIENCES and not is_admin:
+        return jsonify({"error": "Only admin can broadcast."}), 403
+
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "message is required."}), 400
+
+    # This text ends up on someone's lock screen, so it gets the same contact-info filter
+    # the chat does. Otherwise a guest could put their number in a property enquiry and
+    # bypass the entire "no contact sharing" design in one step.
+    if _contains_contact_info(message):
+        return jsonify({
+            "ok": False, "blocked": True,
+            "error": "Phone numbers, emails and social handles are not allowed. Please keep the conversation inside HO-Om."
+        }), 400
+
+    property_id = data.get("propertyId")
+    owner_uid = None
+
+    if audience == 'owner':
+        # ownerUid from the request body is IGNORED. Previously it was trusted, which meant
+        # any signed-in account could push arbitrary text to any hostel owner's phone —
+        # a ready-made phishing channel ("call 98xxx to confirm your booking").
+        if not property_id:
+            return jsonify({"error": "propertyId is required."}), 400
+        biz = firestore_db.collection('businesses').document(property_id).get()
+        if not biz.exists:
+            return jsonify({"error": "Property not found."}), 404
+        owner_uid = (biz.to_dict() or {}).get('ownerId')
+        if not owner_uid:
+            return jsonify({"error": "Could not resolve the owner for this property."}), 400
+
+    guest_uid = None
+    if audience == 'guest':
+        # Only admin may aim a notification at another guest. For everyone else the
+        # legitimate path is /chat/send, which checks they share a booking first.
+        if not is_admin:
+            return jsonify({"error": "Use the booking chat to message a guest."}), 403
+        guest_uid = data.get("guestUid")
+        if not guest_uid:
+            return jsonify({"error": "guestUid is required."}), 400
+
+    doc = _write_notification({
+        "type": data.get("type"),
+        "audience": audience,
+        "message": message,
+        "title": data.get("title"),
+        "ownerUid": owner_uid,
+        "guestUid": guest_uid,
+        "propertyId": property_id,
+        "bookingId": data.get("bookingId"),
+    })
+    return jsonify({"ok": True, "notification": doc})
+
+
+@app.route('/admin/notify', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_admin
+def admin_notify():
+    """
+    Admin-composed notifications. Four modes, matching the console UI:
+      - one owner        -> audience 'owner'  + ownerUid (or propertyId)
+      - all owners       -> audience 'allOwners'
+      - one guest        -> audience 'guest'  + guestUid
+      - all guests       -> audience 'allGuests'
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    audience = data.get("audience")
+    message = (data.get("message") or "").strip()
+    if audience not in _ALLOWED_AUDIENCES:
+        return jsonify({"error": "Invalid audience."}), 400
+    if not message:
+        return jsonify({"error": "message is required."}), 400
+
+    owner_uid = data.get("ownerUid")
+    if audience == 'owner' and not owner_uid and data.get("propertyId"):
+        biz = firestore_db.collection('businesses').document(data["propertyId"]).get()
+        owner_uid = (biz.to_dict() or {}).get('ownerId') if biz.exists else None
+    if audience == 'owner' and not owner_uid:
+        return jsonify({"error": "ownerUid or propertyId is required for a single owner."}), 400
+    if audience == 'guest' and not data.get("guestUid"):
+        return jsonify({"error": "guestUid is required for a single guest."}), 400
+
+    doc = _write_notification({
+        "type": data.get("type") or "admin_message",
+        "audience": audience,
+        "title": data.get("title") or "Message from HO-Om",
+        "message": message,
+        "ownerUid": owner_uid,
+        "guestUid": data.get("guestUid"),
+        "propertyId": data.get("propertyId"),
+    })
+    return jsonify({"ok": True, "notification": doc})
+
+
+@app.route('/admin/recipients', methods=['GET'])
+@limiter.limit("60 per hour")
+@require_admin
+def admin_recipients():
+    """Owner and guest lists for the admin console's "send to" picker."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    owners, seen = [], set()
+    for d in firestore_db.collection('businesses').stream():
+        b = d.to_dict() or {}
+        uid = b.get('ownerId')
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        owners.append({
+            "ownerUid": uid,
+            "propertyId": d.id,
+            "name": (b.get('businessProfile') or {}).get('company') or b.get('businessName') or 'Hostel',
+        })
+
+    guests, gseen = [], set()
+    for d in firestore_db.collection('bookings').stream():
+        b = d.to_dict() or {}
+        uid = b.get('guestUid')
+        if not uid or uid in gseen:
+            continue
+        gseen.add(uid)
+        guests.append({"guestUid": uid, "name": b.get('guestName') or 'Guest'})
+
+    return jsonify({"owners": owners, "guests": guests})
+
+
+# ==========================================
+# 6b. IN-APP MESSENGER
+# ==========================================
+# Chat messages are stored under bookings/{id}/messages and read directly by the client
+# (the rules already restrict that to the guest, that booking's owner, and admin). This
+# route exists so that SENDING a message also fires a notification to the other party —
+# without it the messenger is useless, because nobody knows a message arrived.
+#
+# It also enforces the privacy rule the whole feature exists for: no phone numbers or
+# email addresses may pass through the chat, in either direction.
+@app.route('/chat/send', methods=['POST'])
+@limiter.limit("300 per hour")
+@require_auth
+def chat_send():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    text = (data.get("text") or "").strip()
+
+    if not booking_id or not text:
+        return jsonify({"error": "bookingId and text are required."}), 400
+    if len(text) > 2000:
+        return jsonify({"error": "Message is too long."}), 400
+
+    # The privacy promise: numbers never cross between guest and owner.
+    if _contains_contact_info(text):
+        return jsonify({
+            "ok": False,
+            "blocked": True,
+            "error": "You cannot share phone numbers, emails or other contact details here. Please keep the conversation inside HO-Om."
+        }), 400
+
+    snap = firestore_db.collection('bookings').document(booking_id).get()
+    if not snap.exists:
+        return jsonify({"error": "Booking not found."}), 404
+    b = snap.to_dict() or {}
+
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    is_guest = b.get('guestUid') == request.uid
+    is_owner = b.get('ownerUid') == request.uid
+    if not (is_admin or is_guest or is_owner):
+        return jsonify({"error": "You are not part of this conversation."}), 403
+
+    sender_role = 'guest' if is_guest else ('owner' if is_owner else 'admin')
+    firestore_db.collection('bookings').document(booking_id).collection('messages').add({
+        "senderRole": sender_role,
+        "senderUid": request.uid,
+        "text": text,
+        "createdAt": _dt_now_iso(),
+    })
+
+    # Notify the OTHER side. This is the whole reason the messenger works at all.
+    preview = text[:80] + ('…' if len(text) > 80 else '')
+    if sender_role == 'guest':
+        _write_notification({
+            "type": "chat_message", "audience": "owner",
+            "title": f"{b.get('guestName') or 'Guest'} — {b.get('bookingId') or booking_id}",
+            "message": preview,
+            "ownerUid": b.get('ownerUid'), "propertyId": b.get('propertyId'), "bookingId": booking_id,
+        })
+    else:
+        _write_notification({
+            "type": "chat_message", "audience": "guest",
+            "title": f"{b.get('hostelName') or 'Hostel'}",
+            "message": preview,
+            "guestUid": b.get('guestUid'), "propertyId": b.get('propertyId'), "bookingId": booking_id,
+        })
+
+    return jsonify({"ok": True})
+
+
+# ==========================================
+# 7. SECURE FILE ACCESS (Aadhaar / PDFs / payment proofs)
 # ==========================================
 # The Storage rules now set `allow read: if false` on every folder containing
 # personal data. Previously they said `request.auth != null`, which meant ANY
@@ -840,7 +1291,7 @@ def secure_file():
 
 
 # ==========================================
-# 7. ONE-TIME DATA MIGRATION (admin only)
+# 8. ONE-TIME DATA MIGRATION (admin only)
 # ==========================================
 # The new Firestore rules need an `ownerUid` field on every booking and payout.
 # Rather than making you run a Node script locally, just open this URL once while
@@ -895,7 +1346,48 @@ def backfill_owner_uid():
 
 
 # ==========================================
-# 8. EXPIRED BED-LOCK CLEANUP (admin only)
+# 8b. HIDE OWNER PHONE NUMBERS FROM THE PUBLIC LISTING
+# ==========================================
+# `businesses` is world-readable (listings have to be), and the owner's phone number was
+# sitting inside businessProfile — so anyone could scrape every hostel owner's number in
+# the app without even making an account. This moves each number into a private
+# businessContacts/{businessId} document that only admin and that owner can read.
+#
+# Safe to run more than once.
+@app.route('/admin/hide-owner-phones', methods=['POST'])
+@limiter.limit("5 per hour")
+@require_admin
+def hide_owner_phones():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    moved = skipped = 0
+    for d in firestore_db.collection('businesses').stream():
+        b = d.to_dict() or {}
+        profile = b.get('businessProfile') or {}
+        phone = profile.get('phone')
+        if not phone:
+            skipped += 1
+            continue
+
+        firestore_db.collection('businessContacts').document(d.id).set({
+            "businessId": d.id,
+            "ownerUid": b.get('ownerId'),
+            "phone": phone,
+            "email": profile.get('email'),
+            "movedAt": _dt_now_iso(),
+        }, merge=True)
+
+        profile.pop('phone', None)
+        profile.pop('email', None)
+        d.reference.update({"businessProfile": profile})
+        moved += 1
+
+    return jsonify({"ok": True, "moved": moved, "skipped": skipped})
+
+
+# ==========================================
+# 9. EXPIRED BED-LOCK CLEANUP (admin only)
 # ==========================================
 # Bed locks have a 15-minute ceiling enforced by the rules, but nothing deletes
 # them once they lapse. Call this from a free cron service (cron-job.org) every
