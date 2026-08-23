@@ -48,6 +48,11 @@ def require_auth(fn):
     """Any signed-in Firebase user. Sets request.uid / request.claims."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
+        # CORS preflight carries no Authorization header by design. Rejecting it here
+        # surfaces in the browser as "blocked by CORS policy" and the real request is
+        # never sent at all.
+        if request.method == 'OPTIONS':
+            return ('', 204)
         decoded = _verify_token()
         if not decoded:
             return jsonify({"error": "Authentication required."}), 401
@@ -61,6 +66,8 @@ def require_admin(fn):
     """Signed in AND present in the Firestore `admin` collection."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return ('', 204)
         decoded = _verify_token()
         if not decoded:
             return jsonify({"error": "Authentication required."}), 401
@@ -94,7 +101,7 @@ def build_limiter(app):
         fwd = request.headers.get("X-Forwarded-For", "")
         return "ip:" + (fwd.split(",")[0].strip() if fwd else request.remote_addr or "unknown")
 
-    return Limiter(
+    limiter = Limiter(
         key_func=key,
         app=app,
         default_limits=["200 per hour"],
@@ -103,6 +110,9 @@ def build_limiter(app):
         # run more than one gunicorn worker, point RATELIMIT_STORAGE_URI at a
         # Redis instance or the limits are trivially bypassed.
     )
+    # A 429 on a preflight is indistinguishable from a CORS error in the browser.
+    limiter.request_filter(lambda: request.method == 'OPTIONS')
+    return limiter
 
 
 # ==========================================================================
@@ -182,4 +192,3 @@ def compute_booking_amount(db, property_id, bed_ids):
 
     advance_rupees = round(total * ADVANCE_PERCENT / 100)
     return advance_rupees * 100, total, biz.get("ownerId")
-
