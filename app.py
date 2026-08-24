@@ -1354,6 +1354,57 @@ def backfill_owner_uid():
 # businessContacts/{businessId} document that only admin and that owner can read.
 #
 # Safe to run more than once.
+@app.route('/admin/secure-payout-details', methods=['POST'])
+@limiter.limit("5 per hour")
+@require_admin
+def secure_payout_details():
+    """
+    Moves payoutDetails and legalDetails OUT of the world-readable businesses documents.
+
+    `businesses` has to stay public — that's how listings are browsed — but it was also
+    holding each owner's bank account number, IFSC, UPI ID, licence and GST. Anyone could
+    read every one of them without so much as creating an account.
+
+    Safe to run more than once.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    moved_pay = moved_legal = skipped = 0
+    for d in firestore_db.collection('businesses').stream():
+        b = d.to_dict() or {}
+        owner = b.get('ownerId')
+        touched = False
+
+        pd = b.get('payoutDetails')
+        if pd:
+            firestore_db.collection('businessPayouts').document(d.id).set({
+                **pd, "ownerUid": owner, "businessId": d.id, "movedAt": _dt_now_iso(),
+            }, merge=True)
+            moved_pay += 1
+            touched = True
+
+        ld = b.get('legalDetails')
+        if ld:
+            firestore_db.collection('businessLegal').document(d.id).set({
+                **ld, "ownerUid": owner, "businessId": d.id, "movedAt": _dt_now_iso(),
+            }, merge=True)
+            moved_legal += 1
+            touched = True
+
+        if touched:
+            from firebase_admin import firestore as _fs
+            d.reference.update({
+                "payoutDetails": _fs.DELETE_FIELD,
+                "legalDetails": _fs.DELETE_FIELD,
+            })
+        else:
+            skipped += 1
+
+    return jsonify({"ok": True, "payoutsMoved": moved_pay,
+                    "legalMoved": moved_legal, "skipped": skipped})
+
+
 @app.route('/admin/hide-owner-phones', methods=['POST'])
 @limiter.limit("5 per hour")
 @require_admin
