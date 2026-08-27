@@ -1099,13 +1099,34 @@ def notify():
 
     guest_uid = None
     if audience == 'guest':
-        # Only admin may aim a notification at another guest. For everyone else the
-        # legitimate path is /chat/send, which checks they share a booking first.
-        if not is_admin:
-            return jsonify({"error": "Use the booking chat to message a guest."}), 403
         guest_uid = data.get("guestUid")
         if not guest_uid:
             return jsonify({"error": "guestUid is required."}), 400
+
+        # Admin can notify any guest. An OWNER may notify a guest too — but only one of
+        # their own, proven by a booking that links them. This used to be admin-only, which
+        # silently broke every owner-triggered message to a guest: check-out, rent received,
+        # rent reminder, no-show. The owner saw a success toast; the guest heard nothing.
+        if not is_admin:
+            booking_id = data.get("bookingId")
+            allowed = False
+            if booking_id:
+                bk = firestore_db.collection('bookings').document(booking_id).get()
+                if bk.exists:
+                    bd = bk.to_dict() or {}
+                    allowed = (bd.get('ownerUid') == request.uid
+                               and bd.get('guestUid') == guest_uid)
+            if not allowed and data.get("propertyId"):
+                # Rent reminders carry propertyId rather than a booking id, so fall back to
+                # "do I own this property, and does this guest have a booking in it".
+                biz = firestore_db.collection('businesses').document(data["propertyId"]).get()
+                if biz.exists and (biz.to_dict() or {}).get('ownerId') == request.uid:
+                    q = (firestore_db.collection('bookings')
+                         .where('propertyId', '==', data["propertyId"])
+                         .where('guestUid', '==', guest_uid).limit(1).get())
+                    allowed = len(q) > 0
+            if not allowed:
+                return jsonify({"error": "You can only message guests of your own property."}), 403
 
     doc = _write_notification({
         "type": data.get("type"),
@@ -1251,10 +1272,17 @@ def chat_send():
 
     # Notify the OTHER side. This is the whole reason the messenger works at all.
     preview = text[:80] + ('…' if len(text) > 80 else '')
+
+    # Title the owner's notification with the BED, not the booking code. An owner glancing at
+    # their lock screen can act on "Priya — Bed 4"; "Priya — BK-M3X9K2" makes them open the app
+    # just to work out who is asking.
+    beds = [x.get('id') for x in ((b.get('bookingContext') or {}).get('beds') or []) if x.get('id')]
+    bed_label = ('Bed ' + ', '.join(str(x) for x in beds)) if beds else (b.get('bookingId') or booking_id)
+
     if sender_role == 'guest':
         _write_notification({
             "type": "chat_message", "audience": "owner",
-            "title": f"{b.get('guestName') or 'Guest'} — {b.get('bookingId') or booking_id}",
+            "title": f"{b.get('guestName') or 'Guest'} — {bed_label}",
             "message": preview,
             "ownerUid": b.get('ownerUid'), "propertyId": b.get('propertyId'), "bookingId": booking_id,
         })
@@ -1501,7 +1529,7 @@ def daily_reminders():
     arriving = leaving = overdue = 0
 
     # ---- Arrivals tomorrow: tell the guest AND the owner ----
-    for d in firestore_db.collection('bookings').where('status', '==', 'paid_verified').stream():
+    for d in firestore_db.collection('bookings').where('status', 'in', ['paid_verified', 'checked_in']).stream():
         b = d.to_dict() or {}
         ctx = b.get('bookingContext') or {}
         joining = str(ctx.get('joiningDate') or b.get('joiningDate') or '')[:10]
