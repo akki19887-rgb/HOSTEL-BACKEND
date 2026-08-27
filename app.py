@@ -639,6 +639,30 @@ def razorpay_verify():
                 # Payment + booking record are already safely saved — don't fail the whole
                 # request over this; it can be fixed manually via "Mark Occupied" in Architect Mode.
                 print(f"⚠️ Auto-occupy failed (fix manually if needed): {occErr}")
+
+        # Tell everyone who needs to know. Nothing here notified anyone before, so a Razorpay
+        # payment landed silently: the owner had no idea a bed had just been sold, and the guest
+        # got no confirmation beyond the screen they were already looking at.
+        try:
+            _write_notification({
+                "type": "new_booking", "audience": "owner",
+                "ownerUid": owner_uid, "propertyId": property_id, "bookingId": booking_id,
+                "title": "New booking confirmed",
+                "message": f"{guest_name or 'A guest'} booked and paid Rs {int(amount_rupees)} advance. Bed is now occupied.",
+            })
+            _write_notification({
+                "type": "booking_confirmed", "audience": "guest",
+                "guestUid": guest_uid, "propertyId": property_id, "bookingId": booking_id,
+                "title": "Booking confirmed",
+                "message": f"Your booking at {hostel_name or 'the hostel'} is confirmed. Booking ID: {booking_id}",
+            })
+            _write_notification({
+                "type": "payment_received", "audience": "admin",
+                "propertyId": property_id, "bookingId": booking_id,
+                "message": f"Rs {int(amount_rupees)} received from {guest_name or 'a guest'} ({hostel_name or ''}).",
+            })
+        except Exception as notifErr:
+            print(f"⚠️ Booking notifications failed (booking still saved): {notifErr}")
     else:
         print("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON not set — booking was NOT saved server-side. Set it up so bookings/bed-occupancy work.")
 
@@ -1443,6 +1467,115 @@ def hide_owner_phones():
 # Bed locks have a 15-minute ceiling enforced by the rules, but nothing deletes
 # them once they lapse. Call this from a free cron service (cron-job.org) every
 # 10 minutes, or hit it manually if beds look stuck.
+# ==========================================
+# DAILY REMINDERS — run once a day from cron-job.org
+# ==========================================
+# Three things nobody was being told:
+#   1. Guest forgets they are due to arrive tomorrow.
+#   2. Owner has no idea someone is arriving tomorrow, so the bed is not ready.
+#   3. Rent is overdue and neither side is chasing it.
+#
+# All three are the kind of thing that quietly turns into a cancellation or an argument.
+# A one-line reminder the day before prevents most of them.
+#
+# Auth: this runs unattended from a cron service, so it uses a shared secret in the
+# X-Cron-Key header rather than a Firebase login. Set CRON_SECRET in Render's env vars.
+def _cron_authorised():
+    expected = os.environ.get("CRON_SECRET", "")
+    return bool(expected) and request.headers.get("X-Cron-Key", "") == expected
+
+
+@app.route('/cron/daily-reminders', methods=['POST'])
+@limiter.limit("30 per hour")
+def daily_reminders():
+    if not _cron_authorised():
+        return jsonify({"error": "Unauthorised."}), 401
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    import datetime as _d
+    today = _d.date.today()
+    tomorrow = (today + _d.timedelta(days=1)).isoformat()
+    today_s = today.isoformat()
+
+    arriving = leaving = overdue = 0
+
+    # ---- Arrivals tomorrow: tell the guest AND the owner ----
+    for d in firestore_db.collection('bookings').where('status', '==', 'paid_verified').stream():
+        b = d.to_dict() or {}
+        ctx = b.get('bookingContext') or {}
+        joining = str(ctx.get('joiningDate') or b.get('joiningDate') or '')[:10]
+        checkout = str(b.get('checkOutDate') or ctx.get('checkOutDate') or '')[:10]
+        hostel = b.get('hostelName') or 'the hostel'
+        guest = b.get('guestName') or 'A guest'
+
+        if joining == tomorrow:
+            arriving += 1
+            _write_notification({
+                "type": "checkin_reminder", "audience": "guest",
+                "guestUid": b.get('guestUid'), "propertyId": b.get('propertyId'), "bookingId": d.id,
+                "title": "Check-in tomorrow",
+                "message": f"Your check-in at {hostel} is tomorrow. Please carry your original Aadhaar.",
+            })
+            _write_notification({
+                "type": "arrival_reminder", "audience": "owner",
+                "ownerUid": b.get('ownerUid'), "propertyId": b.get('propertyId'), "bookingId": d.id,
+                "title": "Guest arriving tomorrow",
+                "message": f"{guest} checks in tomorrow. Please keep the bed ready.",
+            })
+
+        # ---- Leaving tomorrow: the owner can start re-listing that bed today ----
+        if checkout == tomorrow:
+            leaving += 1
+            _write_notification({
+                "type": "checkout_reminder", "audience": "owner",
+                "ownerUid": b.get('ownerUid'), "propertyId": b.get('propertyId'), "bookingId": d.id,
+                "title": "Guest leaving tomorrow",
+                "message": f"{guest} checks out tomorrow. The bed will be free.",
+            })
+            _write_notification({
+                "type": "checkout_reminder", "audience": "guest",
+                "guestUid": b.get('guestUid'), "propertyId": b.get('propertyId'), "bookingId": d.id,
+                "title": "Check-out tomorrow",
+                "message": f"Your stay at {hostel} ends tomorrow. Please settle any pending dues.",
+            })
+
+    # ---- Rent overdue: nudge the guest, and tell the owner who is late ----
+    late_by_owner = {}
+    for d in firestore_db.collection('rentLedger').where('paid', '==', False).stream():
+        r = d.to_dict() or {}
+        due = str(r.get('dueDate') or '')[:10]
+        if not due or due >= today_s:
+            continue
+        overdue += 1
+        amount = int(r.get('amount') or 0)
+        _write_notification({
+            "type": "rent_overdue", "audience": "guest",
+            "guestUid": r.get('guestUid'), "propertyId": r.get('propertyId'),
+            "title": "Rent overdue",
+            "message": f"Your rent of Rs {amount} was due on {due}. Please pay at the hostel.",
+        })
+        key = (r.get('ownerUid'), r.get('propertyId'))
+        late_by_owner.setdefault(key, [0, 0])
+        late_by_owner[key][0] += 1
+        late_by_owner[key][1] += amount
+
+    # One summary per owner rather than one message per late guest — five separate pings
+    # about the same thing is how people learn to ignore notifications.
+    for (owner_uid, prop_id), (count, total) in late_by_owner.items():
+        if not owner_uid:
+            continue
+        _write_notification({
+            "type": "rent_overdue_summary", "audience": "owner",
+            "ownerUid": owner_uid, "propertyId": prop_id,
+            "title": "Rent overdue",
+            "message": f"{count} guest(s) have overdue rent totalling Rs {total}.",
+        })
+
+    print(f"⏰ daily reminders: arriving={arriving} leaving={leaving} overdue={overdue}")
+    return jsonify({"ok": True, "arriving": arriving, "leaving": leaving, "overdue": overdue})
+
+
 @app.route('/admin/cleanup-locks', methods=['POST'])
 @limiter.limit("60 per hour")
 @require_admin
@@ -1475,6 +1608,7 @@ def health_check():
         "razorpay_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
         "sms_otp_configured": bool(TWOFACTOR_API_KEY and firebase_admin_app),
         "storage_bucket_configured": bool(os.environ.get("FIREBASE_STORAGE_BUCKET")),
+        "cron_secret_configured": bool(os.environ.get("CRON_SECRET")),
         "allowed_origins": ALLOWED_ORIGINS
     })
 
