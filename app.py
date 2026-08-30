@@ -3,6 +3,7 @@ from flask_cors import CORS
 from google import genai
 import json
 import os
+import datetime as _dt
 import hmac
 import hashlib
 import requests
@@ -1513,6 +1514,72 @@ def _cron_authorised():
     return bool(expected) and request.headers.get("X-Cron-Key", "") == expected
 
 
+# ==========================================
+# PROPERTY VIEWS
+# ==========================================
+# An owner's single question is "are people seeing my hostel?" — and until now the app had
+# no answer, which is the main reason a listing owner stops opening the app after week one.
+#
+# Counted server-side, not from the browser, so the number can't be inflated by a script.
+# Deliberately coarse: one counter per property per day, no per-user tracking, nothing that
+# identifies who looked.
+@app.route('/track-view', methods=['POST'])
+@limiter.limit("600 per hour")
+def track_view():
+    if not firestore_db:
+        return jsonify({"ok": False}), 200          # never block browsing over analytics
+
+    data = request.get_json(silent=True) or {}
+    prop = (data.get("propertyId") or "").strip()
+    kind = data.get("kind") if data.get("kind") in ("card", "rooms", "walkthrough") else "card"
+    if not prop or len(prop) > 64:
+        return jsonify({"ok": False}), 200
+
+    try:
+        from firebase_admin import firestore as _fs
+        day = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+        firestore_db.collection('propertyViews').document(f"{prop}_{day}").set({
+            "propertyId": prop,
+            "day": day,
+            kind: _fs.Increment(1),
+        }, merge=True)
+    except Exception as e:
+        print(f"⚠️ view tracking failed (ignored): {e}")
+    return jsonify({"ok": True}), 200
+
+
+@app.route('/property-stats', methods=['GET'])
+@limiter.limit("120 per hour")
+@require_auth
+def property_stats():
+    """Last 7 days of view counts for a property the caller owns."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    prop = (request.args.get("propertyId") or "").strip()
+    if not prop:
+        return jsonify({"error": "propertyId is required."}), 400
+
+    biz = firestore_db.collection('businesses').document(prop).get()
+    if not biz.exists:
+        return jsonify({"error": "Property not found."}), 404
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    if not is_admin and (biz.to_dict() or {}).get('ownerId') != request.uid:
+        return jsonify({"error": "Not your property."}), 403
+
+    days = [(_dt.date.today() - _dt.timedelta(days=i)).isoformat() for i in range(7)]
+    card = rooms = walk = 0
+    for d in days:
+        snap = firestore_db.collection('propertyViews').document(f"{prop}_{d}").get()
+        if snap.exists:
+            v = snap.to_dict() or {}
+            card += int(v.get('card') or 0)
+            rooms += int(v.get('rooms') or 0)
+            walk += int(v.get('walkthrough') or 0)
+
+    return jsonify({"ok": True, "days": 7, "card": card, "rooms": rooms, "walkthrough": walk})
+
+
 @app.route('/cron/daily-reminders', methods=['POST'])
 @limiter.limit("30 per hour")
 def daily_reminders():
@@ -1602,6 +1669,56 @@ def daily_reminders():
 
     print(f"⏰ daily reminders: arriving={arriving} leaving={leaving} overdue={overdue}")
     return jsonify({"ok": True, "arriving": arriving, "leaving": leaving, "overdue": overdue})
+
+
+# ==========================================
+# PROPERTY VIEWS
+# ==========================================
+# Counted server-side, one document per property per day. Client-side counting was never an
+# option: an owner who can write their own view count will, and then the number means nothing
+# to the next owner you show it to.
+#
+# Deliberately anonymous — only a tally. Who looked at which hostel is not something an owner
+# needs, and not something worth storing.
+@app.route('/track-view', methods=['POST'])
+@limiter.limit("600 per hour")
+def track_view():
+    if not firestore_db:
+        return jsonify({"ok": False}), 200      # never break browsing over a counter
+
+    data = request.get_json(silent=True) or {}
+    prop_id = (data.get("propertyId") or "").strip()
+    kind = data.get("kind") if data.get("kind") in ("view", "plan") else "view"
+    if not prop_id or len(prop_id) > 200:
+        return jsonify({"ok": False}), 200
+
+    try:
+        import datetime as _d
+        from firebase_admin import firestore as _fs
+        day = _d.date.today().isoformat()
+        doc_id = f"{prop_id}_{day}"
+        ref = firestore_db.collection('propertyViews').document(doc_id)
+
+        # ownerUid is stored on the row so the rules can let that owner — and nobody else —
+        # read their own numbers without a cross-document lookup.
+        snap = ref.get()
+        if not snap.exists:
+            biz = firestore_db.collection('businesses').document(prop_id).get()
+            if not biz.exists:
+                return jsonify({"ok": False}), 200
+            ref.set({
+                "propertyId": prop_id,
+                "ownerUid": (biz.to_dict() or {}).get('ownerId'),
+                "day": day,
+                "views": 0,
+                "planOpens": 0,
+            })
+
+        ref.update({("planOpens" if kind == "plan" else "views"): _fs.Increment(1)})
+        return jsonify({"ok": True})
+    except Exception as e:
+        print(f"⚠️ view tracking failed (ignored): {e}")
+        return jsonify({"ok": False}), 200
 
 
 @app.route('/admin/cleanup-locks', methods=['POST'])
