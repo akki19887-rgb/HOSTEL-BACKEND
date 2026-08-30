@@ -11,7 +11,7 @@ from PIL import Image
 
 from datetime import timedelta
 from security import (
-    require_auth, require_admin, build_limiter,
+    require_auth, require_admin, require_staff, build_limiter,
     otp_attempt_allowed, otp_attempt_clear,
     compute_booking_amount, ADVANCE_PERCENT,
 )
@@ -1182,6 +1182,7 @@ def admin_notify():
         "guestUid": data.get("guestUid"),
         "propertyId": data.get("propertyId"),
     })
+    _audit("broadcast", request.uid, "admin", data.get("audience", ""), (data.get("message") or "")[:200])
     return jsonify({"ok": True, "notification": doc})
 
 
@@ -1523,6 +1524,174 @@ def _cron_authorised():
 # Counted server-side, not from the browser, so the number can't be inflated by a script.
 # Deliberately coarse: one counter per property per day, no per-user tracking, nothing that
 # identifies who looked.
+# ==========================================
+# AUDIT LOG
+# ==========================================
+# The moment more than one person has access, "who cancelled this booking?" stops being an
+# answerable question. Written server-side only, so the person being logged cannot edit or
+# erase their own trail.
+def _audit(action, actor_uid, actor_role, target=None, detail=None):
+    if not firestore_db:
+        return
+    try:
+        firestore_db.collection('auditLog').add({
+            "action": action,
+            "actorUid": actor_uid,
+            "actorRole": actor_role,
+            "target": target or "",
+            "detail": (detail or "")[:500],
+            "ip": request.headers.get('X-Forwarded-For', request.remote_addr or ''),
+            "at": _dt_now_iso(),
+        })
+    except Exception as e:
+        print(f"⚠️ audit write failed (ignored): {e}")
+
+
+@app.route('/staff/me', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_staff
+def staff_me():
+    """Tells the app which staff screen to show after login."""
+    return jsonify({"ok": True, "role": request.staff_role})
+
+
+@app.route('/staff/reveal-phone', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_staff
+def staff_reveal_phone():
+    """
+    Support sees numbers masked (98261 XXXXX) and taps to reveal one at a time. Every reveal
+    is logged, and the rate limit caps it at 60 an hour.
+
+    The reason is specific: a support agent walking out to a competitor with 500 owner phone
+    numbers is the most valuable thing they could take, and it is the one theft that leaves
+    no trace otherwise. This makes it visible instead of silent.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    if not booking_id:
+        return jsonify({"error": "bookingId is required."}), 400
+
+    snap = firestore_db.collection('bookings').document(booking_id).get()
+    if not snap.exists:
+        return jsonify({"error": "Booking not found."}), 404
+    b = snap.to_dict() or {}
+
+    _audit("reveal_phone", request.uid, request.staff_role, booking_id,
+           f"{b.get('guestName', '')} / {b.get('hostelName', '')}")
+
+    return jsonify({"ok": True, "phone": b.get('guestPhone') or ""})
+
+
+@app.route('/staff/escalate', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_staff
+def staff_escalate():
+    """
+    Everything support cannot do themselves — refunds, verification, confirming a payment —
+    comes here rather than as a WhatsApp message to the admin. It lands in the admin feed
+    with the booking attached, and there is a record that it was raised and when.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    reason = (data.get("reason") or "").strip()[:400]
+    if not reason:
+        return jsonify({"error": "Please describe the issue."}), 400
+
+    guest = ""
+    if booking_id:
+        snap = firestore_db.collection('bookings').document(booking_id).get()
+        if snap.exists:
+            guest = (snap.to_dict() or {}).get('guestName', '')
+
+    _write_notification({
+        "type": "staff_escalation", "audience": "admin",
+        "bookingId": booking_id or None,
+        "title": "Escalated by support",
+        "message": reason + (f" — {guest} ({booking_id})" if booking_id else ""),
+    })
+    _audit("escalate", request.uid, request.staff_role, booking_id, reason)
+    return jsonify({"ok": True})
+
+
+@app.route('/admin/staff', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_admin
+def admin_manage_staff():
+    """
+    Add, change or switch off a staff member. Admin-only for an obvious reason: if staff could
+    write this collection they could promote themselves, and the whole role system would be
+    decoration.
+
+    Removing access is `active: false`, never a delete — the audit trail needs to keep saying
+    who this uid was.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action")
+
+    if action == "list":
+        out = []
+        for d in firestore_db.collection('staffRoles').stream():
+            out.append({"uid": d.id, **(d.to_dict() or {})})
+        return jsonify({"ok": True, "staff": out})
+
+    uid = (data.get("uid") or "").strip()
+    if not uid:
+        return jsonify({"error": "uid is required."}), 400
+
+    if action == "set":
+        role = data.get("role")
+        if role not in ("support", "field", "verifier"):
+            return jsonify({"error": "role must be support, field or verifier."}), 400
+        # An admin must never be demoted into a staff role by accident — that would silently
+        # cut their own access.
+        if firestore_db.collection('admin').document(uid).get().exists:
+            return jsonify({"error": "That user is an admin. Remove them from admin first."}), 400
+        firestore_db.collection('staffRoles').document(uid).set({
+            "role": role,
+            "active": True,
+            "name": (data.get("name") or "").strip()[:80],
+            "phone": (data.get("phone") or "").strip()[:15],
+            "updatedAt": _dt_now_iso(),
+        }, merge=True)
+        _audit("staff_set", request.uid, "admin", uid, role)
+        return jsonify({"ok": True})
+
+    if action == "disable":
+        firestore_db.collection('staffRoles').document(uid).set(
+            {"active": False, "updatedAt": _dt_now_iso()}, merge=True)
+        _audit("staff_disable", request.uid, "admin", uid, "")
+        return jsonify({"ok": True})
+
+    return jsonify({"error": "Unknown action."}), 400
+
+
+@app.route('/admin/audit', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_admin
+def admin_audit():
+    """Most recent activity first — what you actually want when checking on someone."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    from google.cloud.firestore_v1 import Query
+    rows = []
+    q = (firestore_db.collection('auditLog')
+         .order_by('at', direction=Query.DESCENDING)
+         .limit(int(request.get_json(silent=True, force=True).get('limit', 100) if request.is_json else 100)))
+    for d in q.stream():
+        rows.append({"id": d.id, **(d.to_dict() or {})})
+    return jsonify({"ok": True, "rows": rows})
+
+
 @app.route('/track-view', methods=['POST'])
 @limiter.limit("600 per hour")
 def track_view():
@@ -1673,54 +1842,6 @@ def daily_reminders():
 
 # ==========================================
 # PROPERTY VIEWS
-# ==========================================
-# Counted server-side, one document per property per day. Client-side counting was never an
-# option: an owner who can write their own view count will, and then the number means nothing
-# to the next owner you show it to.
-#
-# Deliberately anonymous — only a tally. Who looked at which hostel is not something an owner
-# needs, and not something worth storing.
-@app.route('/track-view', methods=['POST'])
-@limiter.limit("600 per hour")
-def track_view():
-    if not firestore_db:
-        return jsonify({"ok": False}), 200      # never break browsing over a counter
-
-    data = request.get_json(silent=True) or {}
-    prop_id = (data.get("propertyId") or "").strip()
-    kind = data.get("kind") if data.get("kind") in ("view", "plan") else "view"
-    if not prop_id or len(prop_id) > 200:
-        return jsonify({"ok": False}), 200
-
-    try:
-        import datetime as _d
-        from firebase_admin import firestore as _fs
-        day = _d.date.today().isoformat()
-        doc_id = f"{prop_id}_{day}"
-        ref = firestore_db.collection('propertyViews').document(doc_id)
-
-        # ownerUid is stored on the row so the rules can let that owner — and nobody else —
-        # read their own numbers without a cross-document lookup.
-        snap = ref.get()
-        if not snap.exists:
-            biz = firestore_db.collection('businesses').document(prop_id).get()
-            if not biz.exists:
-                return jsonify({"ok": False}), 200
-            ref.set({
-                "propertyId": prop_id,
-                "ownerUid": (biz.to_dict() or {}).get('ownerId'),
-                "day": day,
-                "views": 0,
-                "planOpens": 0,
-            })
-
-        ref.update({("planOpens" if kind == "plan" else "views"): _fs.Increment(1)})
-        return jsonify({"ok": True})
-    except Exception as e:
-        print(f"⚠️ view tracking failed (ignored): {e}")
-        return jsonify({"ok": False}), 200
-
-
 @app.route('/admin/cleanup-locks', methods=['POST'])
 @limiter.limit("60 per hour")
 @require_admin
