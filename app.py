@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 from google import genai
 import json
@@ -735,6 +736,10 @@ def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
+    # 404 / 405 / 400 etc. are normal HTTP responses, not crashes. Pehle ye bhi
+    # 500 ban jaate the — logs bhar jaate the aur frontend ko galat error milta tha.
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
     print(f"❌ UNEXPECTED ERROR: {e}")
     return jsonify({"error": "Something went wrong on the server. Please try again."}), 500
 
