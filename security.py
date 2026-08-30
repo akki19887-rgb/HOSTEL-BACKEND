@@ -82,6 +82,45 @@ def require_admin(fn):
     return wrapper
 
 
+def require_staff(fn):
+    """
+    Admin, OR an active member of the `staffRoles` collection.
+
+    Handing an employee the admin login gives them every guest's Aadhaar, every owner's bank
+    account, and the power to grant the Verified badge. This decorator is what lets a support
+    agent answer a phone call on a fraction of that.
+
+    Sets request.staff_role to 'admin' | 'support' | 'field' | 'verifier' so a route can
+    narrow further, and so every audit entry records WHICH role acted.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return ('', 204)
+        decoded = _verify_token()
+        if not decoded:
+            return jsonify({"error": "Authentication required."}), 401
+        uid = decoded.get("uid")
+        from firebase_admin import firestore as fb_firestore
+        db = fb_firestore.client()
+
+        if db.collection("admin").document(uid).get().exists:
+            request.staff_role = "admin"
+        else:
+            doc = db.collection("staffRoles").document(uid).get()
+            data = doc.to_dict() if doc.exists else None
+            # `active` is checked separately from existence so that removing someone's access
+            # is one field flip, not a delete — the audit trail of who they were stays intact.
+            if not data or data.get("active") is not True or not data.get("role"):
+                return jsonify({"error": "Staff access required."}), 403
+            request.staff_role = data.get("role")
+
+        request.uid = uid
+        request.claims = decoded
+        return fn(*args, **kwargs)
+    return wrapper
+
+
 # ==========================================================================
 # 2. HOW OFTEN — rate limiting
 #
