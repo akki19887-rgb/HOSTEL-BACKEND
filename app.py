@@ -1884,6 +1884,277 @@ def health_check():
     })
 
 
+
+# ============================================================================
+#  LEADS  —  hostel jo abhi hamare hain, malik ke nahi
+# ----------------------------------------------------------------------------
+#  Ye alag collection hai, `businesses` nahi. Wajah:
+#  firestore.rules me businesses par `allow read: if true` hai — matlab wo
+#  duniya ke liye khula hai (listing dikhani hi padti hai). Agar 226 hostel
+#  ka naam-pata-phone wahan daal diya, to "live nahi hai" ka koi matlab nahi
+#  rehta — koi bhi query karke sab utaar sakta hai.
+#  `leads` ko rules me admin/staff tak seemit rakha gaya hai.
+#
+#  Lead ka safar:  new -> contacted -> agreed / refused -> converted
+#  converted hone par ek asli `businesses` document banta hai, malik ki UID
+#  ke saath, status 'pending_approval'. Uske baad wo aam listing hai.
+# ============================================================================
+
+LEAD_STATUSES = ('new', 'contacted', 'agreed', 'refused', 'converted')
+
+
+def _lead_doc(d, doc_id):
+    x = d or {}
+    x['id'] = doc_id
+    return x
+
+
+@app.route('/admin/leads/import', methods=['POST'])
+@limiter.limit("10 per hour")
+@require_admin
+def import_leads():
+    """Ek saath kai lead daalna. placeId se dedupe hota hai — dobara chalane
+    par purane lead ki jagah naye nahi bantee, sirf ginti wapas aati hai."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    payload = request.get_json(silent=True) or {}
+    rows = payload.get('leads')
+    if not isinstance(rows, list) or not rows:
+        return jsonify({"error": "leads[] chahiye"}), 400
+    if len(rows) > 500:
+        return jsonify({"error": "Ek baar me 500 se zyada nahi"}), 400
+
+    col = firestore_db.collection('leads')
+    added, skipped, bad = 0, 0, 0
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    for r in rows:
+        if not isinstance(r, dict):
+            bad += 1
+            continue
+        name = (r.get('name') or '').strip()
+        if not name:
+            bad += 1
+            continue
+
+        place_id = (r.get('placeId') or '').strip()
+        if place_id:
+            dup = col.where('placeId', '==', place_id).limit(1).get()
+            if len(dup) > 0:
+                skipped += 1
+                continue
+
+        col.add({
+            'name':        name,
+            'phone':       (r.get('phone') or '').strip(),
+            'address':     (r.get('address') or '').strip(),
+            'city':        (r.get('city') or '').strip(),
+            'state':       (r.get('state') or 'Chhattisgarh').strip(),
+            'district':    (r.get('district') or '').strip(),
+            'gender':      (r.get('gender') or '').strip(),      # Female / Male / Co-ed
+            'landmark':    (r.get('landmark') or '').strip(),
+            'facilities':  (r.get('facilities') or '').strip(),
+            'coordinates': {'lat': r.get('lat'), 'lng': r.get('lng')},
+            'placeId':     place_id,
+            'source':      (r.get('source') or 'google-maps').strip(),
+            'status':      'new',
+            'contactLog':  [],
+            'createdAt':   now,
+            'updatedAt':   now,
+        })
+        added += 1
+
+    print(f"✅ Leads import: added={added} skipped={skipped} bad={bad}")
+    return jsonify({"ok": True, "added": added, "skipped": skipped, "invalid": bad})
+
+
+@app.route('/admin/leads', methods=['GET'])
+@limiter.limit("120 per hour")
+@require_staff
+def list_leads():
+    """Caller aur field staff ko apni list yahin se milti hai."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    q = firestore_db.collection('leads')
+    status = (request.args.get('status') or '').strip()
+    if status:
+        if status not in LEAD_STATUSES:
+            return jsonify({"error": "status galat hai"}), 400
+        q = q.where('status', '==', status)
+    district = (request.args.get('district') or '').strip()
+    if district:
+        q = q.where('district', '==', district)
+    gender = (request.args.get('gender') or '').strip()
+    if gender:
+        q = q.where('gender', '==', gender)
+
+    try:
+        limit = min(int(request.args.get('limit', 200)), 500)
+    except (TypeError, ValueError):
+        limit = 200
+
+    out = [_lead_doc(d.to_dict(), d.id) for d in q.limit(limit).stream()]
+    return jsonify({"ok": True, "count": len(out), "leads": out})
+
+
+@app.route('/admin/leads/update', methods=['POST'])
+@limiter.limit("300 per hour")
+@require_staff
+def update_lead():
+    """Caller ya field staff har baat ke baad yahi maarta hai.
+    Har entry me kaun aur kab likha jata hai — baad me hisaab dikh sake."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True) or {}
+    lead_id = (body.get('leadId') or '').strip()
+    if not lead_id:
+        return jsonify({"error": "leadId chahiye"}), 400
+
+    ref = firestore_db.collection('leads').document(lead_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify({"error": "Lead nahi mila"}), 404
+
+    upd = {'updatedAt': _dt.datetime.now(_dt.timezone.utc).isoformat()}
+
+    status = (body.get('status') or '').strip()
+    if status:
+        if status == 'converted':
+            return jsonify({"error": "converted khud se nahi hota — /admin/leads/link se hota hai"}), 400
+        if status not in LEAD_STATUSES:
+            return jsonify({"error": "status galat hai"}), 400
+        upd['status'] = status
+
+    note = (body.get('note') or '').strip()
+    if note:
+        log = (snap.to_dict() or {}).get('contactLog') or []
+        log.append({
+            'at':    _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            'by':    getattr(request, 'uid', None),
+            'note':  note[:500],
+            'status': status or (snap.to_dict() or {}).get('status'),
+        })
+        upd['contactLog'] = log[-50:]
+
+    owner_phone = (body.get('ownerPhone') or '').strip()
+    if owner_phone:
+        upd['ownerPhone'] = owner_phone
+    owner_name = (body.get('ownerName') or '').strip()
+    if owner_name:
+        upd['ownerName'] = owner_name
+
+    ref.update(upd)
+    return jsonify({"ok": True})
+
+
+@app.route('/admin/leads/link', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_admin
+def link_lead_to_owner():
+    """Malik raazi ho gaya. Uske phone number se uski UID dhoondhi jati hai,
+    aur lead se ek asli listing ban jati hai — usi ke naam par.
+
+    Malik ko PEHLE app me OTP se ek baar login karna hoga, tabhi uski UID
+    banti hai. Login nahi kiya to yahan 404 aayega — wo galti nahi, yaad
+    dilana hai ki pehle login karwaiye."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True) or {}
+    lead_id = (body.get('leadId') or '').strip()
+    phone = (body.get('phone') or '').strip()
+    if not lead_id or not phone:
+        return jsonify({"error": "leadId aur phone dono chahiye"}), 400
+
+    digits = ''.join(ch for ch in phone if ch.isdigit())[-10:]
+    if len(digits) != 10:
+        return jsonify({"error": "10 ank ka number dijiye"}), 400
+    e164 = '+91' + digits
+
+    ref = firestore_db.collection('leads').document(lead_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify({"error": "Lead nahi mila"}), 404
+    lead = snap.to_dict() or {}
+    if lead.get('status') == 'converted':
+        return jsonify({"error": "Ye lead pehle hi jud chuka hai",
+                        "businessId": lead.get('businessId')}), 409
+
+    try:
+        user = fb_auth.get_user_by_phone_number(e164)
+    except Exception:
+        return jsonify({
+            "error": "Is number se koi login nahi mila",
+            "hint": "Malik ko pehle app me OTP se ek baar login karwaiye, phir dobara try kijiye"
+        }), 404
+    uid = user.uid
+
+    # Wahi hostel dobara na jud jaye
+    dup = firestore_db.collection('businesses') \
+        .where('ownerId', '==', uid) \
+        .where('leadId', '==', lead_id).limit(1).get()
+    if len(dup) > 0:
+        return jsonify({"error": "Ye listing pehle se bani hui hai",
+                        "businessId": dup[0].id}), 409
+
+    gender_map = {'Female': 'Female', 'Male': 'Male', 'Co-ed': 'Co-ed'}
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    biz = {
+        'businessName':   lead.get('name', ''),
+        # NOTE: malik ka phone yahan JAAN-BUJH KE nahi hai.
+        # `businesses` par rules me `allow read: if true` hai — duniya padh sakti hai.
+        # Phone businessContacts/{businessId} me jata hai, jahan sirf admin aur
+        # khud malik padh sakta hai. (Isi wajah se /admin/hide-owner-phones bana tha.)
+        'businessProfile': {
+            'company':   lead.get('name', ''),
+            'firstName': lead.get('ownerName', ''),
+        },
+        'propertyType':  gender_map.get(lead.get('gender', ''), ''),
+        'city':          lead.get('city', ''),
+        'state':         lead.get('state', 'Chhattisgarh'),
+        'pinAddress':    lead.get('address', ''),
+        'coordinates':   lead.get('coordinates') or {},
+        'rules':         {},
+        'roomsAndBeds':  [],
+        'layout2D':      [],
+        'status':        'pending_approval',
+        'ownerId':       uid,
+        'leadId':        lead_id,
+        'createdFromLead': True,
+        'dateSubmitted': now,
+        'uploadedAt':    now,
+    }
+    new_ref = firestore_db.collection('businesses').document()
+    new_ref.set(biz)
+
+    # Phone alag, band collection me
+    firestore_db.collection('businessContacts').document(new_ref.id).set({
+        'ownerUid':   uid,
+        'phone':      digits,
+        'ownerName':  lead.get('ownerName', ''),
+        'updatedAt':  now,
+    }, merge=True)
+
+    log = lead.get('contactLog') or []
+    log.append({'at': now, 'by': getattr(request, 'uid', None),
+                'note': f'Malik jud gaya. Listing bani: {new_ref.id}', 'status': 'converted'})
+    ref.update({
+        'status':     'converted',
+        'businessId': new_ref.id,
+        'ownerUid':   uid,
+        'ownerPhone': digits,
+        'contactLog': log[-50:],
+        'updatedAt':  now,
+    })
+
+    print(f"✅ Lead {lead_id} -> business {new_ref.id} (owner {uid})")
+    return jsonify({"ok": True, "businessId": new_ref.id, "ownerUid": uid,
+                    "next": "Field officer ab photo, naksha aur rate bhar sakta hai"})
+
 if __name__ == '__main__':
     print("🚀 Server started on port 5000!")
     port = int(os.environ.get("PORT", 5000))
