@@ -1900,6 +1900,21 @@ def health_check():
 #  ke saath, status 'pending_approval'. Uske baad wo aam listing hai.
 # ============================================================================
 
+def _slugify(name):
+    """App ke apne tareeke jaisa hi: naam ka slug + samay.
+    index.html me naye listing ka doc id `${slug}-${Date.now().toString(36)}` banta hai;
+    lead se bani listing bhi wahi shakl rakhe, warna Firebase Console me pehchanna
+    mushkil ho jata hai aur do alag tareeke chalne lagte hain."""
+    import re as _re, time as _time
+    slug = _re.sub(r'[^a-z0-9]+', '-', (name or '').lower()).strip('-')[:60] or 'hostel'
+    stamp = ''
+    n = int(_time.time() * 1000)
+    while n:
+        n, r = divmod(n, 36)
+        stamp = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + stamp
+    return slug + '-' + stamp
+
+
 LEAD_STATUSES = ('new', 'contacted', 'agreed', 'refused', 'converted')
 
 
@@ -1910,11 +1925,15 @@ def _lead_doc(d, doc_id):
 
 
 @app.route('/admin/leads/import', methods=['POST'])
-@limiter.limit("10 per hour")
+@limiter.limit("60 per hour")
 @require_admin
 def import_leads():
-    """Ek saath kai lead daalna. placeId se dedupe hota hai — dobara chalane
-    par purane lead ki jagah naye nahi bantee, sirf ginti wapas aati hai."""
+    """Ek saath kai lead daalna.
+
+    PEHLE ye har lead ke liye alag se Firestore se poochhta tha ki wo pehle se hai
+    ya nahi, phir alag se likhta tha — 292 lead ka matlab 584 chakkar, ek-ek karke.
+    Itni der me browser ka rishta toot jata tha ("Failed to fetch").
+    Ab: maujooda placeId EK baar me padhe jaate hain, aur likhai batch me hoti hai."""
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
@@ -1926,8 +1945,18 @@ def import_leads():
         return jsonify({"error": "Ek baar me 500 se zyada nahi"}), 400
 
     col = firestore_db.collection('leads')
-    added, skipped, bad = 0, 0, 0
+
+    # Jo pehle se hain — ek hi baar me
+    existing = set()
+    for d in col.select(['placeId']).stream():
+        pid = (d.to_dict() or {}).get('placeId')
+        if pid:
+            existing.add(pid)
+
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    batch = firestore_db.batch()
+    pending = 0
+    added, skipped, bad = 0, 0, 0
 
     for r in rows:
         if not isinstance(r, dict):
@@ -1939,20 +1968,20 @@ def import_leads():
             continue
 
         place_id = (r.get('placeId') or '').strip()
+        if place_id and place_id in existing:
+            skipped += 1
+            continue
         if place_id:
-            dup = col.where('placeId', '==', place_id).limit(1).get()
-            if len(dup) > 0:
-                skipped += 1
-                continue
+            existing.add(place_id)   # ek hi file me do baar aaye to bhi
 
-        col.add({
+        batch.set(col.document(), {
             'name':        name,
             'phone':       (r.get('phone') or '').strip(),
             'address':     (r.get('address') or '').strip(),
             'city':        (r.get('city') or '').strip(),
             'state':       (r.get('state') or 'Chhattisgarh').strip(),
             'district':    (r.get('district') or '').strip(),
-            'gender':      (r.get('gender') or '').strip(),      # Female / Male / Co-ed
+            'gender':      (r.get('gender') or '').strip(),
             'landmark':    (r.get('landmark') or '').strip(),
             'facilities':  (r.get('facilities') or '').strip(),
             'coordinates': {'lat': r.get('lat'), 'lng': r.get('lng')},
@@ -1964,8 +1993,16 @@ def import_leads():
             'updatedAt':   now,
         })
         added += 1
+        pending += 1
+        if pending >= 400:          # Firestore batch ki hadd 500 hai
+            batch.commit()
+            batch = firestore_db.batch()
+            pending = 0
 
-    print(f"✅ Leads import: added={added} skipped={skipped} bad={bad}")
+    if pending:
+        batch.commit()
+
+    print(f"Leads import: added={added} skipped={skipped} bad={bad}")
     return jsonify({"ok": True, "added": added, "skipped": skipped, "invalid": bad})
 
 
@@ -2128,7 +2165,7 @@ def link_lead_to_owner():
         'dateSubmitted': now,
         'uploadedAt':    now,
     }
-    new_ref = firestore_db.collection('businesses').document()
+    new_ref = firestore_db.collection('businesses').document(_slugify(lead.get('name', '')))
     new_ref.set(biz)
 
     # Phone alag, band collection me
