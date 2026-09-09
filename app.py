@@ -2192,6 +2192,219 @@ def link_lead_to_owner():
     return jsonify({"ok": True, "businessId": new_ref.id, "ownerUid": uid,
                     "next": "Field officer ab photo, naksha aur rate bhar sakta hai"})
 
+
+# ============================================================
+#  SYSTEM HEALTH  —  Render, Sentry aur GitHub ek hi jagah
+# ------------------------------------------------------------
+#  Ye teenon ke token SERVER pe rehte hain (Render ke Environment me).
+#  Browser me kabhi nahi jaate — isiliye ye kaam yahan hota hai, app me nahi.
+#  Har hisse ki apni jaanch hai: ek seva band ho to baaki phir bhi dikhengi.
+# ============================================================
+
+def _hs(status):
+    """green = theek, yellow = dhyan do, red = kharab, grey = juda nahi"""
+    return status
+
+
+def _render_health():
+    key = os.environ.get("RENDER_API_KEY")
+    sid = os.environ.get("RENDER_SERVICE_ID")
+    if not key or not sid:
+        return {"state": "grey", "title": "Render", "line": "Token nahi mila"}
+    try:
+        r = requests.get(
+            f"https://api.render.com/v1/services/{sid}/deploys?limit=1",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            timeout=8)
+        if r.status_code != 200:
+            return {"state": "red", "title": "Render", "line": f"Jawab {r.status_code}"}
+        items = r.json() or []
+        if not items:
+            return {"state": "grey", "title": "Render", "line": "Koi deploy nahi"}
+        d = (items[0] or {}).get("deploy") or items[0]
+        st = (d.get("status") or "").lower()
+        msg = ((d.get("commit") or {}).get("message") or "").split("\n")[0][:60]
+        when = (d.get("finishedAt") or d.get("createdAt") or "")[:16].replace("T", " ")
+        good = st in ("live", "succeeded")
+        busy = st in ("build_in_progress", "update_in_progress", "created", "queued")
+        return {
+            "state": "green" if good else ("yellow" if busy else "red"),
+            "title": "Render — backend",
+            "line": f"{st or 'pata nahi'} · {when}" + (f" · {msg}" if msg else ""),
+        }
+    except Exception as e:
+        return {"state": "red", "title": "Render", "line": f"Nahi pahunch paye: {e.__class__.__name__}"}
+
+
+def _sentry_health():
+    tok = os.environ.get("SENTRY_AUTH_TOKEN")
+    org = os.environ.get("SENTRY_ORG")
+    proj = os.environ.get("SENTRY_PROJECT")
+    if not (tok and org and proj):
+        return {"state": "grey", "title": "Sentry", "line": "Token nahi mila"}
+    try:
+        r = requests.get(
+            f"https://sentry.io/api/0/projects/{org}/{proj}/issues/",
+            params={"query": "is:unresolved", "statsPeriod": "24h", "limit": 5},
+            headers={"Authorization": f"Bearer {tok}"}, timeout=8)
+        if r.status_code != 200:
+            return {"state": "red", "title": "Sentry", "line": f"Jawab {r.status_code}"}
+        issues = r.json() or []
+        if not issues:
+            return {"state": "green", "title": "Sentry — errors",
+                    "line": "Pichhle 24 ghante me koi error nahi"}
+        top = [f"{(i.get('title') or '')[:48]} ({i.get('count', '?')}x)" for i in issues[:3]]
+        return {"state": "red", "title": "Sentry — errors",
+                "line": f"{len(issues)} error khule hain",
+                "detail": top}
+    except Exception as e:
+        return {"state": "red", "title": "Sentry", "line": f"Nahi pahunch paye: {e.__class__.__name__}"}
+
+
+def _github_health():
+    tok = os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GITHUB_REPO")
+    if not (tok and repo):
+        return {"state": "grey", "title": "GitHub", "line": "Token nahi mila"}
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/actions/runs",
+            params={"per_page": 1},
+            headers={"Authorization": f"Bearer {tok}",
+                     "Accept": "application/vnd.github+json"}, timeout=8)
+        if r.status_code != 200:
+            return {"state": "red", "title": "GitHub", "line": f"Jawab {r.status_code}"}
+        runs = (r.json() or {}).get("workflow_runs") or []
+        if not runs:
+            return {"state": "grey", "title": "GitHub", "line": "Koi run nahi"}
+        w = runs[0]
+        st = (w.get("status") or "")
+        con = (w.get("conclusion") or "")
+        when = (w.get("updated_at") or "")[:16].replace("T", " ")
+        title = (w.get("display_title") or w.get("name") or "")[:50]
+        if st != "completed":
+            state, line = "yellow", f"chal raha hai · {title}"
+        elif con == "success":
+            state, line = "green", f"hara · {when} · {title}"
+        else:
+            state, line = "red", f"{con or 'fail'} · {when} · {title}"
+        return {"state": state, "title": "GitHub — website deploy", "line": line}
+    except Exception as e:
+        return {"state": "red", "title": "GitHub", "line": f"Nahi pahunch paye: {e.__class__.__name__}"}
+
+
+@app.route('/admin/system-health', methods=['GET'])
+@limiter.limit("120 per hour")
+@require_staff
+def system_health():
+    """Teenon seva ek saath. Ek fail ho to baaki phir bhi aati hain."""
+    cards = [_render_health(), _sentry_health(), _github_health()]
+    worst = "green"
+    for c in cards:
+        if c["state"] == "red":
+            worst = "red"; break
+        if c["state"] in ("yellow", "grey") and worst == "green":
+            worst = c["state"]
+    return jsonify({"ok": True, "overall": worst, "cards": cards,
+                    "checkedAt": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+
+
+
+@app.route('/admin/change-owner-phone', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_admin
+def change_owner_phone():
+    """Malik ka login number badalna — UID wahi rehti hai.
+
+    Kyun zaroori: pehchan number se nahi, UID se hoti hai. Malik agar naye number
+    se login karega to Firebase NAYA account bana dega — nayi UID — aur uski
+    listing, booking, rent sab purani UID se judi rah jayengi. Usko lagega sab
+    kho gaya.
+    Yahan hum usi UID par number badal dete hain, isliye kuch nahi tootta.
+
+    Sirf admin. Ye badlav tay karta hai ki us hostel me kaun login kar sakta hai,
+    isliye audit log me bhi likha jata hai."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True) or {}
+    uid = (body.get('uid') or '').strip()
+    business_id = (body.get('businessId') or '').strip()
+    new_phone = ''.join(ch for ch in (body.get('newPhone') or '') if ch.isdigit())[-10:]
+
+    if len(new_phone) != 10:
+        return jsonify({"error": "10 ank ka naya number dijiye"}), 400
+    if not uid and not business_id:
+        return jsonify({"error": "uid ya businessId me se ek chahiye"}), 400
+
+    # businessId diya ho to usi se uid nikal lo
+    if not uid:
+        snap = firestore_db.collection('businesses').document(business_id).get()
+        if not snap.exists:
+            return jsonify({"error": "Listing nahi mili"}), 404
+        uid = (snap.to_dict() or {}).get('ownerId') or ''
+        if not uid:
+            return jsonify({"error": "Is listing se koi malik juda hi nahi hai"}), 400
+
+    e164 = '+91' + new_phone
+
+    # Naya number kisi aur ke paas to nahi
+    try:
+        other = fb_auth.get_user_by_phone_number(e164)
+        if other.uid != uid:
+            return jsonify({
+                "error": "Ye number pehle se kisi aur account se juda hai",
+                "hint": "Us account ko pehle hatana ya doosra number lena padega"
+            }), 409
+    except Exception:
+        pass  # kisi ke paas nahi hai — yahi chahiye
+
+    try:
+        old = fb_auth.get_user(uid)
+        old_phone = old.phone_number or ''
+    except Exception:
+        return jsonify({"error": "Ye UID Firebase me nahi mili"}), 404
+
+    try:
+        fb_auth.update_user(uid, phone_number=e164)
+    except Exception as e:
+        return jsonify({"error": f"Number badal nahi paya: {e}"}), 500
+
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    # businessContacts me bhi sudhaar do (wahan number rakha jata hai)
+    try:
+        q = firestore_db.collection('businesses').where('ownerId', '==', uid).stream()
+        for b in q:
+            firestore_db.collection('businessContacts').document(b.id).set(
+                {'ownerUid': uid, 'phone': new_phone, 'updatedAt': now}, merge=True)
+    except Exception as e:
+        print(f"businessContacts update chhoot gaya: {e}")
+
+    # lead pe bhi, agar us malik ka lead ho
+    try:
+        for l in firestore_db.collection('leads').where('ownerUid', '==', uid).stream():
+            firestore_db.collection('leads').document(l.id).update(
+                {'ownerPhone': new_phone, 'updatedAt': now})
+    except Exception as e:
+        print(f"lead update chhoot gaya: {e}")
+
+    # audit log — kisne, kiska, kab badla
+    try:
+        firestore_db.collection('auditLog').add({
+            'actorUid': getattr(request, 'uid', None),
+            'action':   'Malik ka login number badla',
+            'target':   uid,
+            'detail':   f"{old_phone or 'pata nahi'} -> {e164}",
+            'at':       now,
+        })
+    except Exception as e:
+        print(f"audit log chhoot gaya: {e}")
+
+    return jsonify({"ok": True, "uid": uid, "oldPhone": old_phone, "newPhone": e164,
+                    "note": "UID wahi hai — listing, booking aur rent sab jude rahenge"})
+
+
 if __name__ == '__main__':
     print("🚀 Server started on port 5000!")
     port = int(os.environ.get("PORT", 5000))
