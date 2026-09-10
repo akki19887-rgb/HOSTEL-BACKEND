@@ -2026,6 +2026,12 @@ def list_leads():
     gender = (request.args.get('gender') or '').strip()
     if gender:
         q = q.where('gender', '==', gender)
+    # "Mere kaam" — staff ko sirf apne saunpe hue lead
+    assigned = (request.args.get('assignedTo') or '').strip()
+    if assigned:
+        if assigned == 'me':
+            assigned = getattr(request, 'uid', '') or '__none__'
+        q = q.where('assignedTo', '==', assigned)
 
     try:
         limit = min(int(request.args.get('limit', 200)), 500)
@@ -2082,6 +2088,24 @@ def update_lead():
     owner_name = (body.get('ownerName') or '').strip()
     if owner_name:
         upd['ownerName'] = owner_name
+
+    # Kaam ki tick-list — kya-kya karna baaki hai.
+    # Field officer ko dobara poochhna na pade ki "yahan karna kya hai".
+    if isinstance(body.get('tasks'), list):
+        upd['tasks'] = [str(t)[:40] for t in body['tasks']][:12]
+
+    # Kisko saunpa gaya. assignedTo khaali bhejne se saunp wapas le li jaati hai.
+    if 'assignedTo' in body:
+        upd['assignedTo'] = (body.get('assignedTo') or '').strip()
+        upd['assignedName'] = (body.get('assignedName') or '').strip()
+        upd['assignedAt'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+    # Malik ki ijazat — kisne li, kab li. Baad me koi kahe "maine to kaha hi
+    # nahi tha", to record maujood rahe.
+    if body.get('consent') is True:
+        upd['consent'] = True
+        upd['consentBy'] = getattr(request, 'uid', None)
+        upd['consentAt'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
     ref.update(upd)
     return jsonify({"ok": True})
@@ -2403,6 +2427,48 @@ def change_owner_phone():
 
     return jsonify({"ok": True, "uid": uid, "oldPhone": old_phone, "newPhone": e164,
                     "note": "UID wahi hai — listing, booking aur rent sab jude rahenge"})
+
+
+
+@app.route('/admin/leads/attach-business', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_staff
+def attach_business_to_lead():
+    """Field officer ne lead se hostel bana diya — us listing ko lead se jod do.
+
+    /admin/leads/link se alag hai: wahan MALIK ki UID par listing banti hai.
+    Yahan listing pehle hi ban chuki hai — jo bhi logged-in tha uske naam par,
+    aksar field officer. Malik ka account baad me banega, tab admin use saunp
+    dega. Rules me yahi likha hai: doorstep par bani listing us staff ki hai
+    jab tak asli malik ka account nahi ban jaata."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True) or {}
+    lead_id = (body.get('leadId') or '').strip()
+    business_id = (body.get('businessId') or '').strip()
+    if not lead_id or not business_id:
+        return jsonify({"error": "leadId aur businessId dono chahiye"}), 400
+
+    ref = firestore_db.collection('leads').document(lead_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify({"error": "Lead nahi mila"}), 404
+
+    lead = snap.to_dict() or {}
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    log = lead.get('contactLog') or []
+    log.append({'at': now, 'by': getattr(request, 'uid', None),
+                'note': f'Hostel bana diya. Listing: {business_id}',
+                'status': 'converted'})
+
+    ref.update({
+        'status':     'converted',
+        'businessId': business_id,
+        'contactLog': log[-50:],
+        'updatedAt':  now,
+    })
+    return jsonify({"ok": True, "businessId": business_id})
 
 
 if __name__ == '__main__':
