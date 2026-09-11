@@ -2471,6 +2471,112 @@ def attach_business_to_lead():
     return jsonify({"ok": True, "businessId": business_id})
 
 
+
+@app.route('/admin/repair-owner-links', methods=['POST'])
+@limiter.limit("20 per hour")
+@require_admin
+def repair_owner_links():
+    """Har listing ka malik apne aap jod do.
+
+    Kyun: listing ka malik `ownerId` se pehchana jata hai, aur Business Dashboard
+    wahi dhoondhta hai. Jo listing admin ne ya kisi purane raste se banayi thi,
+    unme `ownerId` khaali reh gaya — isliye malik login karta hai aur use apni
+    hi property nahi dikhti.
+
+    Haath se sudharna matlab har listing ka phone dhoondho, Authentication me
+    uski UID dhoondho, phir Firestore me chipkao. 50 listing par ye kai din ka
+    kaam hai. Ye route wahi kaam sekundon me karta hai.
+
+    Phone kahan-kahan se dhoondha jata hai (isi kram me):
+      1. businessContacts/{businessId}.phone   (asli jagah)
+      2. businesses/{id}.businessProfile.phone (purani listing me yahi hota tha)
+      3. us listing se judi lead ka ownerPhone ya phone
+
+    Kuch nahi mila to wo listing chhod di jaati hai aur report me naam ke saath
+    lautayi jaati hai — taaki aap sirf UNHI par dhyan dein, sab par nahi.
+
+    dryRun: true bhejiye to kuch badla nahi jayega, sirf report aayegi.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get('dryRun'))
+
+    # Lead ke phone ek hi baar padh lo
+    lead_phone_by_biz = {}
+    try:
+        for l in firestore_db.collection('leads').stream():
+            d = l.to_dict() or {}
+            bid = d.get('businessId')
+            if bid:
+                ph = (d.get('ownerPhone') or d.get('phone') or '').strip()
+                if ph:
+                    lead_phone_by_biz[bid] = ph
+    except Exception as e:
+        print(f"leads padhne me dikkat: {e}")
+
+    fixed, already, no_phone, no_account, failed = 0, 0, [], [], []
+
+    for doc in firestore_db.collection('businesses').stream():
+        data = doc.to_dict() or {}
+        name = data.get('businessName') or (data.get('businessProfile') or {}).get('company') or doc.id
+
+        if (data.get('ownerId') or '').strip():
+            already += 1
+            continue
+
+        # --- phone dhoondho ---
+        phone = ''
+        try:
+            c = firestore_db.collection('businessContacts').document(doc.id).get()
+            if c.exists:
+                phone = ((c.to_dict() or {}).get('phone') or '').strip()
+        except Exception:
+            pass
+        if not phone:
+            phone = ((data.get('businessProfile') or {}).get('phone') or '').strip()
+        if not phone:
+            phone = lead_phone_by_biz.get(doc.id, '')
+
+        digits = ''.join(ch for ch in phone if ch.isdigit())[-10:]
+        if len(digits) != 10:
+            no_phone.append({"id": doc.id, "name": name})
+            continue
+
+        # --- us phone ka account dhoondho ---
+        try:
+            user = fb_auth.get_user_by_phone_number('+91' + digits)
+        except Exception:
+            no_account.append({"id": doc.id, "name": name, "phone": digits})
+            continue
+
+        if dry_run:
+            fixed += 1
+            continue
+
+        try:
+            doc.reference.update({'ownerId': user.uid})
+            # phone ko band collection me bhi rakh do, agar wahan nahi hai
+            firestore_db.collection('businessContacts').document(doc.id).set({
+                'ownerUid': user.uid, 'phone': digits,
+                'updatedAt': _dt.datetime.now(_dt.timezone.utc).isoformat()
+            }, merge=True)
+            fixed += 1
+        except Exception as e:
+            failed.append({"id": doc.id, "name": name, "error": str(e)[:120]})
+
+    return jsonify({
+        "ok": True,
+        "dryRun": dry_run,
+        "fixed": fixed,
+        "alreadyLinked": already,
+        "noPhone": no_phone,          # in par aapko khud phone daalna hoga
+        "phoneHasNoAccount": no_account,  # malik ne abhi tak login hi nahi kiya
+        "failed": failed
+    })
+
+
 if __name__ == '__main__':
     print("🚀 Server started on port 5000!")
     port = int(os.environ.get("PORT", 5000))
