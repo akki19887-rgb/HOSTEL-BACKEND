@@ -1974,16 +1974,35 @@ def import_leads():
         if place_id:
             existing.add(place_id)   # ek hi file me do baar aaye to bhi
 
+        # Rating, review ki ginti aur thappa bhi rakhe jaate hain.
+        # Kyun: bina inke caller ko pata hi nahi chalta ki pehle kise phone kare.
+        # 637 review wala hostel aur 1 review wala — dono ek jaise dikhte the,
+        # aur caller kram se chalta rehta tha. Ab bade aur achhe upar aa jaate hain.
+        # 'locality' alag rakha hai taaki "Pandri ke 12" ek saath nikal sakein.
+        try:
+            rating_val = float(r.get('rating')) if r.get('rating') not in (None, '') else None
+        except (TypeError, ValueError):
+            rating_val = None
+        try:
+            review_val = int(r.get('reviewCount')) if r.get('reviewCount') not in (None, '') else 0
+        except (TypeError, ValueError):
+            review_val = 0
+
         batch.set(col.document(), {
             'name':        name,
             'phone':       (r.get('phone') or '').strip(),
             'address':     (r.get('address') or '').strip(),
             'city':        (r.get('city') or '').strip(),
+            'locality':    (r.get('locality') or '').strip(),
             'state':       (r.get('state') or 'Chhattisgarh').strip(),
             'district':    (r.get('district') or '').strip(),
             'gender':      (r.get('gender') or '').strip(),
             'landmark':    (r.get('landmark') or '').strip(),
             'facilities':  (r.get('facilities') or '').strip(),
+            'review':      (r.get('review') or '').strip()[:900],
+            'rating':      rating_val,
+            'reviewCount': review_val,
+            'verdict':     (r.get('verdict') or '').strip(),
             'coordinates': {'lat': r.get('lat'), 'lng': r.get('lng')},
             'placeId':     place_id,
             'source':      (r.get('source') or 'google-maps').strip(),
@@ -2026,6 +2045,18 @@ def list_leads():
     gender = (request.args.get('gender') or '').strip()
     if gender:
         q = q.where('gender', '==', gender)
+    # Rajya aur shahar se bhi chhaant — jab doosre rajya me kaam shuru hoga to
+    # sirf jila kaafi nahi rahega (do rajyon me ek hi naam ka jila ho sakta hai).
+    state = (request.args.get('state') or '').strip()
+    if state:
+        q = q.where('state', '==', state)
+    city = (request.args.get('city') or '').strip()
+    if city:
+        q = q.where('city', '==', city)
+    locality = (request.args.get('locality') or '').strip()
+    if locality:
+        q = q.where('locality', '==', locality)
+
     # "Mere kaam" — staff ko sirf apne saunpe hue lead
     assigned = (request.args.get('assignedTo') or '').strip()
     if assigned:
