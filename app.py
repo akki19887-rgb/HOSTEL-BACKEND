@@ -253,7 +253,7 @@ def send_registration_email():
     if not RESEND_API_KEY or not ADMIN_EMAIL:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY and ADMIN_EMAIL env vars."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     guest_name = data.get('guestName', 'A guest')
     hostel_name = data.get('hostelName', 'your hostel')
     pdf_url = data.get('pdfUrl', '')
@@ -288,7 +288,7 @@ def notify_admin_new_login():
     if not RESEND_API_KEY or not ADMIN_EMAIL:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY and ADMIN_EMAIL env vars."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     phone = data.get('phone', '').strip()
     if not phone:
         return jsonify({"error": "phone is required"}), 400
@@ -379,7 +379,7 @@ def razorpay_create_order():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured (Firestore unavailable)."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     property_id = data.get('propertyId')
     bed_ids = data.get('bedIds') or []
     currency = 'INR'
@@ -463,7 +463,7 @@ def razorpay_verify():
     if not RAZORPAY_KEY_SECRET:
         return jsonify({"ok": False, "error": "Razorpay not configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     order_id = data.get('razorpay_order_id')
     payment_id = data.get('razorpay_payment_id')
     received_signature = data.get('razorpay_signature')
@@ -701,7 +701,7 @@ def send_otp():
     if not TWOFACTOR_API_KEY:
         return jsonify({"error": "SMS OTP not configured on server. Set TWOFACTOR_API_KEY env var."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     phone_digits = _clean_10digit_phone(data.get('phone'))
     if not phone_digits:
         return jsonify({"error": "A valid 10-digit phone number is required"}), 400
@@ -732,7 +732,7 @@ def verify_otp():
     if not firebase_admin_app:
         return jsonify({"error": "Firebase Admin SDK not configured on server. Set FIREBASE_SERVICE_ACCOUNT_JSON env var."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     session_id = (data.get('session_id') or '').strip()
     otp = (data.get('otp') or '').strip()
     phone_digits = _clean_10digit_phone(data.get('phone'))
@@ -923,7 +923,7 @@ def push_register():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     token = (data.get('token') or '').strip()
     if not token or len(token) > 4096:
         return jsonify({"error": "A valid token is required."}), 400
@@ -955,7 +955,7 @@ def push_register():
 def push_unregister():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
-    token = ((request.get_json(silent=True) or {}).get('token') or '').strip()
+    token = ((request.get_json(silent=True, force=True) or {}).get('token') or '').strip()
     if token:
         try:
             firestore_db.collection('deviceTokens').document(token).delete()
@@ -1008,7 +1008,7 @@ def notify():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     audience = data.get("audience") or "admin"
     if audience not in _ALLOWED_AUDIENCES:
         return jsonify({"error": "Invalid audience."}), 400
@@ -1104,7 +1104,7 @@ def admin_notify():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     audience = data.get("audience")
     message = (data.get("message") or "").strip()
     if audience not in _ALLOWED_AUDIENCES:
@@ -1184,7 +1184,7 @@ def chat_send():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     booking_id = (data.get("bookingId") or "").strip()
     text = (data.get("text") or "").strip()
 
@@ -1518,7 +1518,7 @@ def staff_reveal_phone():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     booking_id = (data.get("bookingId") or "").strip()
     if not booking_id:
         return jsonify({"error": "bookingId is required."}), 400
@@ -1546,7 +1546,7 @@ def staff_escalate():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     booking_id = (data.get("bookingId") or "").strip()
     reason = (data.get("reason") or "").strip()[:400]
     if not reason:
@@ -1583,7 +1583,7 @@ def admin_manage_staff():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     action = data.get("action")
 
     if action == "list":
@@ -1646,7 +1646,7 @@ def track_view():
     if not firestore_db:
         return jsonify({"ok": False}), 200          # never block browsing over analytics
 
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True, force=True) or {}
     prop = (data.get("propertyId") or "").strip()
     kind = data.get("kind") if data.get("kind") in ("card", "rooms", "walkthrough") else "card"
     if not prop or len(prop) > 64:
@@ -2092,7 +2092,7 @@ def assistant_ask():
         return jsonify({"error": "Assistant abhi chalu nahi hai. Render ke Environment me "
                                  "ANTHROPIC_API_KEY daalna baaki hai."}), 503
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     question = (body.get('question') or '').strip()
     if not question:
         return jsonify({"error": "Sawaal likhiye."}), 400
@@ -2355,7 +2355,7 @@ def import_leads():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True, force=True) or {}
     rows = payload.get('leads')
     if not isinstance(rows, list) or not rows:
         return jsonify({"error": "leads[] chahiye"}), 400
@@ -2500,7 +2500,7 @@ def update_lead():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     lead_id = (body.get('leadId') or '').strip()
     if not lead_id:
         return jsonify({"error": "leadId chahiye"}), 400
@@ -2573,7 +2573,7 @@ def link_lead_to_owner():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     lead_id = (body.get('leadId') or '').strip()
     phone = (body.get('phone') or '').strip()
     if not lead_id or not phone:
@@ -2800,7 +2800,7 @@ def change_owner_phone():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     uid = (body.get('uid') or '').strip()
     business_id = (body.get('businessId') or '').strip()
     new_phone = ''.join(ch for ch in (body.get('newPhone') or '') if ch.isdigit())[-10:]
@@ -2893,7 +2893,7 @@ def attach_business_to_lead():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     lead_id = (body.get('leadId') or '').strip()
     business_id = (body.get('businessId') or '').strip()
     if not lead_id or not business_id:
@@ -2949,7 +2949,7 @@ def repair_owner_links():
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True, force=True) or {}
     dry_run = bool(body.get('dryRun'))
 
     # Lead ke phone ek hi baar padh lo
