@@ -1592,6 +1592,55 @@ def admin_manage_staff():
             out.append({"uid": d.id, **(d.to_dict() or {})})
         return jsonify({"ok": True, "staff": out})
 
+    if action == "create":
+        # Make the login and grant the role in one go. The admin never sees a uid.
+        # firestore_db is checked at the top of this route, and it is only ever set inside the
+        # same try block that imports fb_auth — so if we are here, fb_auth exists.
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
+        name = (data.get("name") or "").strip()[:80]
+        role = data.get("role")
+        if role not in ("support", "field", "verifier"):
+            return jsonify({"error": "role must be support, field or verifier."}), 400
+        if not _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            return jsonify({"error": "Email theek nahi hai."}), 400
+        if len(password) < 8:
+            return jsonify({"error": "Password kam se kam 8 akshar ka rakhiye."}), 400
+        if not name:
+            return jsonify({"error": "Naam bhariye."}), 400
+
+        reused = False
+        try:
+            new_user = fb_auth.create_user(email=email, password=password, display_name=name)
+        except Exception as e:
+            # Almost always "email already exists". Rather than making the admin go hunting,
+            # attach the role to the account that is already there — but never silently reset
+            # somebody's password, so the password field is ignored in that case.
+            try:
+                new_user = fb_auth.get_user_by_email(email)
+                reused = True
+            except Exception:
+                return jsonify({"error": "Account nahi bana: %s" % e.__class__.__name__}), 400
+
+        new_uid = new_user.uid
+        if firestore_db.collection('admin').document(new_uid).get().exists:
+            return jsonify({"error": "Ye account admin hai. Pehle admin se hataiye."}), 400
+        firestore_db.collection('staffRoles').document(new_uid).set({
+            "role": role,
+            "active": True,
+            "name": name,
+            "email": email,
+            "phone": (data.get("phone") or "").strip()[:15],
+            "updatedAt": _dt_now_iso(),
+        }, merge=True)
+        _audit("staff_create" if not reused else "staff_set", request.uid, "admin", new_uid, role)
+        return jsonify({
+            "ok": True, "uid": new_uid, "email": email, "reused": reused,
+            "message": ("Is email ka account pehle se tha \u2014 usi ko role de diya. "
+                        "Password wahi purana hai.") if reused
+                       else "Account ban gaya aur access de diya gaya.",
+        })
+
     uid = (data.get("uid") or "").strip()
     if not uid:
         return jsonify({"error": "uid is required."}), 400
@@ -1634,7 +1683,7 @@ def admin_audit():
     rows = []
     q = (firestore_db.collection('auditLog')
          .order_by('at', direction=Query.DESCENDING)
-         .limit(int(request.get_json(silent=True, force=True).get('limit', 100) if request.is_json else 100)))
+         .limit(int((request.get_json(silent=True, force=True) or {}).get('limit', 100))))
     for d in q.stream():
         rows.append({"id": d.id, **(d.to_dict() or {})})
     return jsonify({"ok": True, "rows": rows})
