@@ -1608,6 +1608,53 @@ def booking_release_beds():
     return jsonify({"ok": True, "bedsFreed": freed, "lockRemoved": lock_removed})
 
 
+@app.route('/owner/contact', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_auth
+def owner_contact_save():
+    """Malik ka phone number band collection me rakhta hai.
+
+    businessContacts par niyam 'backend only' hai, isliye browser khud wahan nahi likh
+    sakta. Pehle ye kaam browser se hone ki koshish hoti thi, hamesha mana hota tha, aur
+    galti chup-chaap dab jati thi - to har khud se jude malik ka number kho jata tha.
+
+    Yahan number us listing ke asli malik se hi liya jata hai. Koi doosra kisi aur ki
+    listing par apna number nahi chipka sakta.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    business_id = (data.get("businessId") or "").strip()
+    phone = (data.get("phone") or "").strip()
+
+    if not business_id or len(business_id) > 200:
+        return jsonify({"error": "businessId is required."}), 400
+
+    digits = _re.sub(r"\D", "", phone)
+    if len(digits) < 10 or len(digits) > 15:
+        return jsonify({"error": "A valid phone number is required."}), 400
+
+    biz = firestore_db.collection('businesses').document(business_id).get()
+    if not biz.exists:
+        return jsonify({"error": "Property not found."}), 404
+
+    owner_uid = (biz.to_dict() or {}).get('ownerId')
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    if owner_uid != request.uid and not is_admin:
+        return jsonify({"error": "This is not your property."}), 403
+
+    firestore_db.collection('businessContacts').document(business_id).set({
+        "ownerUid": owner_uid,
+        "phone": digits,
+        "updatedAt": _dt_now_iso(),
+    }, merge=True)
+
+    _audit("owner_contact_saved", request.uid,
+           "admin" if is_admin else "owner", business_id, "phone saved")
+    return jsonify({"ok": True})
+
+
 @app.route('/bed/clear-stale-lock', methods=['POST'])
 @limiter.limit("60 per hour")
 @require_auth
