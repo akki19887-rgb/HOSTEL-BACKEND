@@ -19,7 +19,7 @@ from security import (
 
 app = Flask(__name__)
 
-# Was CORS(app) — that allowed EVERY website on the internet to call these
+# Was CORS(app) - that allowed EVERY website on the internet to call these
 # endpoints from a user's browser. Now only your own domain can.
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get(
     "ALLOWED_ORIGINS", "https://ho-om.in,https://www.ho-om.in"
@@ -38,7 +38,7 @@ if not GEMINI_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Email service (Resend.com) — for sending the Guest Registration PDF link to the hostel admin's email.
+# Email service (Resend.com) - for sending the Guest Registration PDF link to the hostel admin's email.
 # Sign up free at https://resend.com, verify your sending domain (or use their test domain to start),
 # then set these two environment variables the same way as GEMINI_API_KEY above:
 #   RESEND_API_KEY   -> your Resend API key
@@ -46,28 +46,28 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL")
 
-# RAZORPAY PAYMENT GATEWAY — set these env vars before running:
+# RAZORPAY PAYMENT GATEWAY - set these env vars before running:
 #   RAZORPAY_KEY_ID       -> starts with rzp_test_... (test) or rzp_live_... (production)
 #   RAZORPAY_KEY_SECRET   -> secret from Razorpay dashboard (NEVER expose to frontend)
 # Get them from: https://dashboard.razorpay.com/app/keys
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
 
-# 2FACTOR.IN — SMS OTP (DLT-compliant), replaces Firebase's default phone-auth SMS route which was
-# getting flagged as spam/blocked by Indian carriers. Get the API key from 2factor.in → Account
-# Summary, and the approved template name from SMS OTP → OTP Templates.
+# 2FACTOR.IN - SMS OTP (DLT-compliant), replaces Firebase's default phone-auth SMS route which was
+# getting flagged as spam/blocked by Indian carriers. Get the API key from 2factor.in -> Account
+# Summary, and the approved template name from SMS OTP -> OTP Templates.
 #   TWOFACTOR_API_KEY        -> your 2Factor.in API key
-#   TWOFACTOR_TEMPLATE_NAME  -> the exact Template Name you created (e.g. "Ho-Om") — must be approved
+#   TWOFACTOR_TEMPLATE_NAME  -> the exact Template Name you created (e.g. "Ho-Om") - must be approved
 TWOFACTOR_API_KEY = os.environ.get("TWOFACTOR_API_KEY")
 TWOFACTOR_TEMPLATE_NAME = os.environ.get("TWOFACTOR_TEMPLATE_NAME", "Ho-Om")
 
-# FIREBASE ADMIN SDK — used for (a) the custom Resend-branded email verification link, and (b)
+# FIREBASE ADMIN SDK - used for (a) the custom Resend-branded email verification link, and (b)
 # writing booking records + marking beds 'occupied' server-side after a Razorpay payment is
 # verified (see /razorpay/verify below). Never trust the browser to write its own "I paid"
-# record — this is exactly the hole a fake/DevTools booking used to slip through.
-# Firebase Console → Project Settings → Service Accounts → "Generate new private key" downloads a
+# record - this is exactly the hole a fake/DevTools booking used to slip through.
+# Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key" downloads a
 # JSON file. Paste its ENTIRE content as the value of a FIREBASE_SERVICE_ACCOUNT_JSON env var
-# (same way as GEMINI_API_KEY above) — do not commit the JSON file itself to git.
+# (same way as GEMINI_API_KEY above) - do not commit the JSON file itself to git.
 FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
 firebase_admin_app = None
 firestore_db = None
@@ -80,12 +80,12 @@ if FIREBASE_SERVICE_ACCOUNT_JSON:
             'storageBucket': os.environ.get('FIREBASE_STORAGE_BUCKET', '')
         })
         firestore_db = fb_firestore.client()
-        print("✅ Firebase Admin SDK initialized (Auth + Firestore).")
+        print("[OK] Firebase Admin SDK initialized (Auth + Firestore).")
     except Exception as e:
-        print(f"⚠️ Firebase Admin SDK failed to initialize: {e}")
+        print(f"[!] Firebase Admin SDK failed to initialize: {e}")
 
 # SENTRY ERROR LOGGING (backend): optional. Set SENTRY_DSN env var (same way as GEMINI_API_KEY)
-# once you have it from sentry.io — the server will keep working fine even without it.
+# once you have it from sentry.io - the server will keep working fine even without it.
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
 if SENTRY_DSN:
     try:
@@ -93,7 +93,7 @@ if SENTRY_DSN:
         from sentry_sdk.integrations.flask import FlaskIntegration
         sentry_sdk.init(dsn=SENTRY_DSN, integrations=[FlaskIntegration()], traces_sample_rate=0.2)
     except ImportError:
-        print("⚠️  sentry-sdk not installed. Run: pip install sentry-sdk --break-system-packages")
+        print("[!]  sentry-sdk not installed. Run: pip install sentry-sdk --break-system-packages")
 
 # ==========================================
 # 1. EXACT 2D MAP AUTO-EXTRACTION
@@ -103,7 +103,7 @@ if SENTRY_DSN:
 @require_auth
 def process_rough_layout():
     print("\n" + "="*50)
-    print("🟢 START: AI Map Extraction Started!")
+    print("[START] START: AI Map Extraction Started!")
 
     if 'floor_plan' not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
@@ -123,11 +123,11 @@ def process_rough_layout():
            - "straight": ONE single corridor running along one edge or through the middle, with rooms
              on at most two sides of it (this is the common case).
            - "L": the corridor bends once, 90 degrees, like the letter L.
-           - "T": the corridor forms a T-junction — one corridor meets another at a midpoint, forming 3 arms.
-           - "cross": the corridor forms a "+" junction — two corridors crossing, forming 4 arms.
+           - "T": the corridor forms a T-junction - one corridor meets another at a midpoint, forming 3 arms.
+           - "cross": the corridor forms a "+" junction - two corridors crossing, forming 4 arms.
            - "H": there are TWO SEPARATE, PARALLEL straight corridors (e.g. one between the top row of
              rooms and the middle row, and another between the middle row and the bottom row), which
-             may or may not be joined by a short connecting corridor segment — like the letter H. This
+             may or may not be joined by a short connecting corridor segment - like the letter H. This
              is different from "cross": in "H" the two corridors do NOT cross each other, they are two
              independent straight runs stacked with room-rows between and around them.
 
@@ -136,7 +136,7 @@ def process_rough_layout():
            (e.g., If rooms are on the right and the empty path is on the left, choose "left". If rooms
            are on both sides of the path, choose "center".)
            If corridor_shape is "L", "T", "cross", or "H", set corridor_position to "center" (it's
-           ignored in that case — quadrant/row assignment below is what actually matters).
+           ignored in that case - quadrant/row assignment below is what actually matters).
 
         3. ROOM QUADRANT (only when corridor_shape is "L", "T", or "cross"): For each room, imagine the
            floor plan as a map and determine which quadrant it sits in relative to the corridor
@@ -144,23 +144,23 @@ def process_rough_layout():
            Leave this field out entirely (or null) when corridor_shape is not "L"/"T"/"cross".
 
         4. ROOM ROW + SIDE (only when corridor_shape is "H"): For each room, determine:
-           - "row": which room-band it's in — "top" (above the first corridor), "middle" (between the
+           - "row": which room-band it's in - "top" (above the first corridor), "middle" (between the
              two corridors), or "bottom" (below the second corridor).
            - "side": "left" or "right" of the vertical connector (if the drawing has no clear left/right
              split, alternate rooms left/right in the order they appear, left-to-right on the page).
            Leave both fields out entirely (or null) when corridor_shape is not "H".
 
-        5. ROOMS: Identify all rooms and their labels EXACTLY as handwritten. This is critical — do not
+        5. ROOMS: Identify all rooms and their labels EXACTLY as handwritten. This is critical - do not
            guess or "clean up" a label into a different one. If a room number is genuinely ambiguous
            (could be a "9" or could be a letter), look at neighboring room numbers for a sequence (e.g.
            if rooms 1-8 are already found in order, an ambiguous next label is almost certainly "9", not
            a letter) and prefer the numeric reading that continues the sequence. Count the beds inside
            each room (default to 1 if unclear, based on distinct bed shapes/labels like "bed1", "bed2").
 
-        6. AMENITIES (CRITICAL — DO NOT INVENT): Only mark 'bathroom' or 'study_table' for a room if
+        6. AMENITIES (CRITICAL - DO NOT INVENT): Only mark 'bathroom' or 'study_table' for a room if
            there is an explicit small box/icon/label for it INSIDE that room in the drawing (e.g. a box
            labeled "bath", "washroom", "table", or a distinct bathroom/table icon). If a room contains
-           ONLY bed labels and nothing else, its amenities list MUST be empty — never add a bathroom or
+           ONLY bed labels and nothing else, its amenities list MUST be empty - never add a bathroom or
            table that was not actually drawn, even if other similar rooms in the plan have one.
 
         7. DOORS: True if doors/openings are marked.
@@ -201,7 +201,7 @@ def process_rough_layout():
         }
         """
 
-        print("👉 AI (gemini-2.5-flash) is analyzing the drawing...")
+        print("-> AI (gemini-2.5-flash) is analyzing the drawing...")
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[prompt, img]
@@ -217,17 +217,17 @@ def process_rough_layout():
 
         parsed_json = json.loads(response_text)
 
-        print(f"✅ DONE: Corridor shape: {parsed_json.get('corridor_shape', 'unknown')} · position: {parsed_json.get('corridor_position', 'unknown')}")
+        print(f"[OK] DONE: Corridor shape: {parsed_json.get('corridor_shape', 'unknown')} - position: {parsed_json.get('corridor_position', 'unknown')}")
         print("="*50 + "\n")
         return jsonify(parsed_json)
 
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"[X] ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 # ==========================================
-# 1B. AADHAR AUTO-FILL — REMOVED (deliberately, do not re-add)
+# 1B. AADHAR AUTO-FILL - REMOVED (deliberately, do not re-add)
 # ==========================================
 # This route used to accept a photograph of a guest's Aadhaar card and send the image to
 # a third-party AI service to read the name, date of birth, Aadhaar number and address so
@@ -235,7 +235,7 @@ def process_rough_layout():
 #
 # It was removed because the whole image left our control. Our own Privacy Policy states
 # that masked Aadhaar is preferred and that we operate in compliance with the DPDP Act
-# 2023 — shipping the full card to an outside processor contradicts both, and Aadhaar is
+# 2023 - shipping the full card to an outside processor contradicts both, and Aadhaar is
 # the most heavily protected identifier we touch. The saving was roughly thirty seconds of
 # typing per booking, which is not worth that exposure.
 #
@@ -265,7 +265,7 @@ def send_registration_email():
             json={
                 "from": "HostelOM <noreply@ho-om.in>",  # change to your verified domain once set up
                 "to": [ADMIN_EMAIL],
-                "subject": f"New Booking Request — {guest_name} ({hostel_name})",
+                "subject": f"New Booking Request - {guest_name} ({hostel_name})",
                 "html": f"<p>{guest_name} just submitted a Hostel Registration Form for <b>{hostel_name}</b>.</p>"
                         + (f'<p><a href="{pdf_url}">View / Download the PDF</a></p>' if pdf_url else "")
             },
@@ -300,10 +300,10 @@ def notify_admin_new_login():
             json={
                 "from": "HostelOM <noreply@ho-om.in>",
                 "to": [ADMIN_EMAIL],
-                "subject": f"New user logged in — {phone}",
+                "subject": f"New user logged in - {phone}",
                 "html": f"""
                     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
-                        <h2 style="color:#4f46e5;">HostelOM — New Mobile Login</h2>
+                        <h2 style="color:#4f46e5;">HostelOM - New Mobile Login</h2>
                         <p>A new user just signed in with mobile number: <b>{phone}</b></p>
                         <p style="color:#64748b; font-size:12px;">Check the admin dashboard's "Users" tab for their location (if shared) and login history.</p>
                     </div>
@@ -325,7 +325,7 @@ def send_verification_email():
     if not RESEND_API_KEY:
         return jsonify({"error": "Email not configured on server. Set RESEND_API_KEY env var."}), 500
 
-    # Use the SIGNED-IN user's own email, never one supplied in the request body —
+    # Use the SIGNED-IN user's own email, never one supplied in the request body -
     # otherwise anyone could generate real Firebase verification links for
     # addresses they don't control.
     email = (request.claims.get('email') or '').strip()
@@ -334,7 +334,7 @@ def send_verification_email():
 
     try:
         # Firebase generates the actual secure verification link (same one it would've emailed
-        # itself) — we just take over how it gets delivered.
+        # itself) - we just take over how it gets delivered.
         verify_link = fb_auth.generate_email_verification_link(email)
 
         resp = requests.post(
@@ -346,7 +346,7 @@ def send_verification_email():
                 "subject": "Verify your email for HostelOM",
                 "html": f"""
                     <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
-                        <h2 style="color:#4f46e5;">Welcome to HostelOM 🏠</h2>
+                        <h2 style="color:#4f46e5;">Welcome to HostelOM &#127968;</h2>
                         <p>Please verify your email address to continue.</p>
                         <p><a href="{verify_link}" style="display:inline-block; background:#4f46e5; color:white; padding:12px 24px; border-radius:10px; text-decoration:none; font-weight:bold;">Verify Email</a></p>
                         <p style="color:#64748b; font-size:12px;">If the button doesn't work, copy this link: {verify_link}</p>
@@ -359,7 +359,7 @@ def send_verification_email():
             return jsonify({"error": resp.text}), 500
         return jsonify({"success": True})
     except Exception as e:
-        print(f"❌ ERROR sending verification email: {e}")
+        print(f"[X] ERROR sending verification email: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -385,9 +385,9 @@ def razorpay_create_order():
     currency = 'INR'
 
     # THE BROWSER NO LONGER SENDS AN AMOUNT AT ALL.
-    # It used to, and the server accepted it — so a DevTools edit could turn a
-    # ₹7,000 advance into ₹1, and the signature would still verify (a real ₹1
-    # payment against a real ₹1 order), producing a paid_verified booking with
+    # It used to, and the server accepted it - so a DevTools edit could turn a
+    # Rs 7,000 advance into Rs 1, and the signature would still verify (a real Rs 1
+    # payment against a real Rs 1 order), producing a paid_verified booking with
     # the bed marked occupied. The price now comes from the live bed data in
     # Firestore on every single order.
     try:
@@ -421,23 +421,23 @@ def razorpay_create_order():
             timeout=15
         )
         if resp.status_code >= 300:
-            print(f"❌ Razorpay order create failed: {resp.status_code} {resp.text}")
+            print(f"[X] Razorpay order create failed: {resp.status_code} {resp.text}")
             return jsonify({"error": "Razorpay order creation failed", "details": resp.text}), 502
 
         order = resp.json()
         return jsonify({
             "orderId": order.get("id"),
-            "keyId": RAZORPAY_KEY_ID,      # public key — safe to expose
+            "keyId": RAZORPAY_KEY_ID,      # public key - safe to expose
             "amount": order.get("amount"),
             "currency": order.get("currency"),
             "totalStayAmount": total_rupees,
             "advancePercent": ADVANCE_PERCENT
         })
     except requests.RequestException as e:
-        print(f"❌ Razorpay network error: {e}")
+        print(f"[X] Razorpay network error: {e}")
         return jsonify({"error": "Network error contacting Razorpay."}), 502
     except Exception as e:
-        print(f"❌ Razorpay create-order error: {e}")
+        print(f"[X] Razorpay create-order error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -446,16 +446,16 @@ def razorpay_create_order():
 # ==========================================
 # After the user pays, Razorpay sends razorpay_order_id + razorpay_payment_id +
 # razorpay_signature to the frontend. Frontend forwards them here. We recompute the
-# HMAC-SHA256 signature server-side using our KEY_SECRET and compare — this is the
+# HMAC-SHA256 signature server-side using our KEY_SECRET and compare - this is the
 # ONLY reliable way to confirm the payment actually happened (never trust the client).
 #
 # This endpoint now also:
 #   1. Re-fetches the payment's ACTUAL captured amount from Razorpay's own API and compares it
-#      against the order's original amount — the browser's claimed amount is never trusted.
+#      against the order's original amount - the browser's claimed amount is never trusted.
 #   2. Writes the 'bookings' record itself (Admin SDK), instead of letting the browser write its
-#      own "I paid" document — closes the "fake paid_verified booking via DevTools" hole.
+#      own "I paid" document - closes the "fake paid_verified booking via DevTools" hole.
 #   3. Marks the paid bed(s) 'occupied' on the business's live listing in the same transaction,
-#      and confirms the reservation lock — so this never has to happen client-side either.
+#      and confirms the reservation lock - so this never has to happen client-side either.
 @app.route('/razorpay/verify', methods=['POST'])
 @limiter.limit("30 per hour")
 @require_auth
@@ -481,7 +481,7 @@ def razorpay_verify():
     ).hexdigest()
 
     if not hmac.compare_digest(expected_signature, received_signature):
-        print(f"❌ Signature MISMATCH for order {order_id}")
+        print(f"[X] Signature MISMATCH for order {order_id}")
         return jsonify({"ok": False, "error": "Invalid signature. Payment could not be verified."}), 400
 
     # ---- Signature verified. Now confirm the ACTUAL amount with Razorpay directly (never trust
@@ -496,7 +496,7 @@ def razorpay_verify():
         order_obj = order_resp.json()
         payment_obj = payment_resp.json()
     except requests.RequestException as e:
-        print(f"❌ Razorpay verify network error: {e}")
+        print(f"[X] Razorpay verify network error: {e}")
         return jsonify({"ok": False, "error": "Network error contacting Razorpay."}), 502
 
     if payment_obj.get('order_id') != order_id:
@@ -504,11 +504,11 @@ def razorpay_verify():
     if payment_obj.get('status') != 'captured':
         return jsonify({"ok": False, "error": f"Payment not captured (status: {payment_obj.get('status')})."}), 400
     if int(payment_obj.get('amount', -1)) != int(order_obj.get('amount', -2)):
-        print(f"❌ AMOUNT MISMATCH — order={order_obj.get('amount')} payment={payment_obj.get('amount')}")
+        print(f"[X] AMOUNT MISMATCH - order={order_obj.get('amount')} payment={payment_obj.get('amount')}")
         return jsonify({"ok": False, "error": "Paid amount does not match the order amount."}), 400
 
     # ---- Identity of this booking comes from the ORDER NOTES we wrote ourselves
-    # at create time — NOT from the request body. Previously propertyId and
+    # at create time - NOT from the request body. Previously propertyId and
     # guestUid were read straight off the browser's JSON, so a caller could
     # attribute a payment to any property or any user account they liked. ----
     order_notes = order_obj.get('notes') or {}
@@ -525,7 +525,7 @@ def razorpay_verify():
     except (TypeError, ValueError):
         expected_paise = -1
     if int(payment_obj.get('amount', 0)) != expected_paise:
-        print(f"❌ PRICE TAMPER — paid={payment_obj.get('amount')} expected={expected_paise}")
+        print(f"[X] PRICE TAMPER - paid={payment_obj.get('amount')} expected={expected_paise}")
         return jsonify({"ok": False, "error": "Paid amount does not match the server-computed price."}), 400
 
     # IDEMPOTENCY: Razorpay retries, and users double-tap. Without this one
@@ -554,7 +554,7 @@ def razorpay_verify():
                 "bookingId": booking_id,
                 "paymentId": payment_id,
                 "orderId": order_id,
-                "amount": amount_rupees,  # the advance actually charged — this IS the platform's commission in full (Pay-at-Hostel model)
+                "amount": amount_rupees,  # the advance actually charged - this IS the platform's commission in full (Pay-at-Hostel model)
                 "totalStayAmount": total_stay_amount,
                 "hostelBalanceDue": hostel_balance_due,  # guest pays this directly to the hostel at check-in
                 "currency": "INR",
@@ -566,14 +566,14 @@ def razorpay_verify():
                 # Denormalised so the owner's "Property Bookings" tab can query
                 # this collection. A rule that resolves the owner via get() on
                 # another document cannot be evaluated on a QUERY, only on a
-                # single-doc read — which is why that tab was failing before.
+                # single-doc read - which is why that tab was failing before.
                 "ownerUid": owner_uid,
                 "bookingContext": booking_context,
                 "status": "paid_verified",
                 "createdAt": fb_firestore.SERVER_TIMESTAMP,
             })
         except Exception as fsErr:
-            print(f"⚠️ Booking write failed (payment still valid): {fsErr}")
+            print(f"[!] Booking write failed (payment still valid): {fsErr}")
 
         # From the signed order, not from the request body.
         bed_ids = bed_ids_from_order or [b.get('id') for b in (booking_context.get('beds') or []) if b.get('id')]
@@ -581,9 +581,9 @@ def razorpay_verify():
             try:
                 _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id)
             except Exception as occErr:
-                # Payment + booking record are already safely saved — don't fail the whole
+                # Payment + booking record are already safely saved - don't fail the whole
                 # request over this; it can be fixed manually via "Mark Occupied" in Architect Mode.
-                print(f"⚠️ Auto-occupy failed (fix manually if needed): {occErr}")
+                print(f"[!] Auto-occupy failed (fix manually if needed): {occErr}")
 
         # Tell everyone who needs to know. Nothing here notified anyone before, so a Razorpay
         # payment landed silently: the owner had no idea a bed had just been sold, and the guest
@@ -607,11 +607,11 @@ def razorpay_verify():
                 "message": f"Rs {int(amount_rupees)} received from {guest_name or 'a guest'} ({hostel_name or ''}).",
             })
         except Exception as notifErr:
-            print(f"⚠️ Booking notifications failed (booking still saved): {notifErr}")
+            print(f"[!] Booking notifications failed (booking still saved): {notifErr}")
     else:
-        print("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON not set — booking was NOT saved server-side. Set it up so bookings/bed-occupancy work.")
+        print("[!] FIREBASE_SERVICE_ACCOUNT_JSON not set - booking was NOT saved server-side. Set it up so bookings/bed-occupancy work.")
 
-    print(f"✅ Payment verified · order={order_id} · payment={payment_id} · booking={booking_id} · ₹{amount_rupees}")
+    print(f"[OK] Payment verified - order={order_id} - payment={payment_id} - booking={booking_id} - Rs {amount_rupees}")
     # Optional: fire-and-forget email notification to admin
     try:
         if RESEND_API_KEY and ADMIN_EMAIL:
@@ -621,16 +621,16 @@ def razorpay_verify():
                 json={
                     "from": "HostelOM <noreply@ho-om.in>",
                     "to": [ADMIN_EMAIL],
-                    "subject": f"✅ Payment Received — {guest_name or 'Guest'} ({hostel_name})",
+                    "subject": f"[OK] Payment Received - {guest_name or 'Guest'} ({hostel_name})",
                     "html": f"<p>Booking <b>{booking_id}</b> paid successfully.</p>"
                             f"<p>Payment ID: <code>{payment_id}</code><br>"
                             f"Order ID: <code>{order_id}</code><br>"
-                            f"Amount: ₹{amount_rupees}</p>"
+                            f"Amount: Rs {amount_rupees}</p>"
                 },
                 timeout=8
             )
     except Exception as mailErr:
-        print(f"⚠️ Admin email notification failed: {mailErr}")
+        print(f"[!] Admin email notification failed: {mailErr}")
 
     return jsonify({
         "ok": True,
@@ -643,7 +643,7 @@ def razorpay_verify():
 
 def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
     """Flips the given bed IDs to 'occupied' inside businesses/{property_id}.roomsAndBeds, and
-    marks the matching bedLocks/{lock_id} document confirmed — run as one atomic transaction so
+    marks the matching bedLocks/{lock_id} document confirmed - run as one atomic transaction so
     two simultaneous payments can never both think they got the same bed."""
     biz_ref = firestore_db.collection('businesses').document(property_id)
     lock_ref = firestore_db.collection('bedLocks').document(lock_id) if lock_id else None
@@ -680,15 +680,15 @@ def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
     # 404 / 405 / 400 etc. are normal HTTP responses, not crashes. Pehle ye bhi
-    # 500 ban jaate the — logs bhar jaate the aur frontend ko galat error milta tha.
+    # 500 ban jaate the - logs bhar jaate the aur frontend ko galat error milta tha.
     if isinstance(e, HTTPException):
         return jsonify({"error": e.description}), e.code
-    print(f"❌ UNEXPECTED ERROR: {e}")
+    print(f"[X] UNEXPECTED ERROR: {e}")
     return jsonify({"error": "Something went wrong on the server. Please try again."}), 500
 
 
 # ==========================================
-# SMS OTP — send + verify, via 2Factor.in
+# SMS OTP - send + verify, via 2Factor.in
 # ==========================================
 def _clean_10digit_phone(raw):
     digits = ''.join(c for c in (raw or '') if c.isdigit())
@@ -707,7 +707,7 @@ def send_otp():
         return jsonify({"error": "A valid 10-digit phone number is required"}), 400
 
     # Per-NUMBER cap on top of the per-IP limit above. Without this, a script that
-    # rotates IPs could still bomb one victim's phone with SMS — each one billed
+    # rotates IPs could still bomb one victim's phone with SMS - each one billed
     # to your 2Factor account.
     if not otp_attempt_allowed(f"send:{phone_digits}"):
         return jsonify({"error": "Too many OTP requests for this number. Please try again later."}), 429
@@ -718,7 +718,7 @@ def send_otp():
         result = resp.json()
         if result.get('Status') != 'Success':
             return jsonify({"error": result.get('Details', 'Failed to send OTP')}), 500
-        # "Details" here is 2Factor's session_id — the frontend must send it back on verify.
+        # "Details" here is 2Factor's session_id - the frontend must send it back on verify.
         return jsonify({"session_id": result.get('Details')})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -740,7 +740,7 @@ def verify_otp():
         return jsonify({"error": "session_id, otp and a valid phone are required"}), 400
 
     # Five wrong guesses kills the session. A 4-digit OTP is only 10,000
-    # combinations — trivially brute-forceable without this.
+    # combinations - trivially brute-forceable without this.
     if not otp_attempt_allowed(session_id):
         return jsonify({"error": "Too many incorrect attempts. Please request a new OTP."}), 429
 
@@ -751,7 +751,7 @@ def verify_otp():
         if result.get('Status') != 'Success' or result.get('Details') != 'OTP Matched':
             return jsonify({"error": "Incorrect or expired OTP. Please try again."}), 400
 
-        # OTP is correct — get (or create) a real Firebase Auth user for this phone number, and
+        # OTP is correct - get (or create) a real Firebase Auth user for this phone number, and
         # hand the frontend a custom token to sign in with. This keeps every existing uid-based
         # Firestore rule and document untouched; only *how* the OTP was sent/verified changed.
         e164_phone = "+91" + phone_digits
@@ -768,7 +768,7 @@ def verify_otp():
 
 
 # ==========================================
-# 6. NOTIFICATIONS — the app's backbone
+# 6. NOTIFICATIONS - the app's backbone
 # ==========================================
 # Notifications used to be written straight from the browser with `allow create: if true`,
 # which meant anyone on the internet could stuff junk into the collection. Every notification
@@ -776,10 +776,10 @@ def verify_otp():
 # audience, and the Admin SDK writes it (bypassing rules entirely).
 #
 # `audience` controls who sees it in their feed:
-#   'admin'    — only the HO-Om admin console
-#   'owner'    — one specific hostel owner (ownerUid required)
-#   'guest'    — one specific guest (guestUid required)
-#   'allOwners'/'allGuests' — broadcast, admin only
+#   'admin'    - only the HO-Om admin console
+#   'owner'    - one specific hostel owner (ownerUid required)
+#   'guest'    - one specific guest (guestUid required)
+#   'allOwners'/'allGuests' - broadcast, admin only
 
 import re as _re
 
@@ -824,7 +824,7 @@ def _write_notification(payload):
     try:
         _send_push_for(doc)
     except Exception as e:
-        print(f"⚠️ push failed (notification still saved): {e}")
+        print(f"[!] push failed (notification still saved): {e}")
     return doc
 
 
@@ -846,7 +846,7 @@ def _tokens_for_uid(uid):
 
 
 def _tokens_for_role(role):
-    """role: 'owner' | 'guest' — used for the allOwners / allGuests broadcasts."""
+    """role: 'owner' | 'guest' - used for the allOwners / allGuests broadcasts."""
     out = []
     for d in firestore_db.collection('deviceTokens').where('role', '==', role).stream():
         t = (d.to_dict() or {}).get('token')
@@ -911,7 +911,7 @@ def _send_push_for(doc):
         ),
     )
     resp = messaging.send_each_for_multicast(message)
-    print(f"📲 push: {resp.success_count}/{len(tokens)} delivered")
+    print(f"[push] push: {resp.success_count}/{len(tokens)} delivered")
     _prune_dead_tokens(tokens, resp.responses)
 
 
@@ -930,7 +930,7 @@ def push_register():
 
     # Role is derived server-side, NOT taken from the request body. Previously the browser
     # chose it, so a guest could register as 'owner' and start receiving every allOwners
-    # broadcast — including anything commercially sensitive you send to your hostel owners.
+    # broadcast - including anything commercially sensitive you send to your hostel owners.
     if firestore_db.collection('admin').document(request.uid).get().exists:
         role = 'admin'
     elif len(firestore_db.collection('businesses').where('ownerId', '==', request.uid).limit(1).get()) > 0:
@@ -980,10 +980,10 @@ def push_test():
     resp = messaging.send_each_for_multicast(messaging.MulticastMessage(
         tokens=tokens,
         notification=messaging.Notification(
-            title="HO-Om test", body="Push notifications kaam kar rahe hain ✅"),
+            title="HO-Om test", body="Push notifications kaam kar rahe hain [OK]"),
         webpush=messaging.WebpushConfig(
             notification=messaging.WebpushNotification(
-                title="HO-Om test", body="Push notifications kaam kar rahe hain ✅",
+                title="HO-Om test", body="Push notifications kaam kar rahe hain [OK]",
                 icon='/icon-192.png'),
             fcm_options=messaging.WebpushFCMOptions(link='https://ho-om.in/'),
         ),
@@ -1035,7 +1035,7 @@ def notify():
 
     if audience == 'owner':
         # ownerUid from the request body is IGNORED. Previously it was trusted, which meant
-        # any signed-in account could push arbitrary text to any hostel owner's phone —
+        # any signed-in account could push arbitrary text to any hostel owner's phone -
         # a ready-made phishing channel ("call 98xxx to confirm your booking").
         if not property_id:
             return jsonify({"error": "propertyId is required."}), 400
@@ -1052,7 +1052,7 @@ def notify():
         if not guest_uid:
             return jsonify({"error": "guestUid is required."}), 400
 
-        # Admin can notify any guest. An OWNER may notify a guest too — but only one of
+        # Admin can notify any guest. An OWNER may notify a guest too - but only one of
         # their own, proven by a booking that links them. This used to be admin-only, which
         # silently broke every owner-triggered message to a guest: check-out, rent received,
         # rent reminder, no-show. The owner saw a success toast; the guest heard nothing.
@@ -1172,7 +1172,7 @@ def admin_recipients():
 # ==========================================
 # Chat messages are stored under bookings/{id}/messages and read directly by the client
 # (the rules already restrict that to the guest, that booking's owner, and admin). This
-# route exists so that SENDING a message also fires a notification to the other party —
+# route exists so that SENDING a message also fires a notification to the other party -
 # without it the messenger is useless, because nobody knows a message arrived.
 #
 # It also enforces the privacy rule the whole feature exists for: no phone numbers or
@@ -1221,10 +1221,10 @@ def chat_send():
     })
 
     # Notify the OTHER side. This is the whole reason the messenger works at all.
-    preview = text[:80] + ('…' if len(text) > 80 else '')
+    preview = text[:80] + ('...' if len(text) > 80 else '')
 
     # Title the owner's notification with the BED, not the booking code. An owner glancing at
-    # their lock screen can act on "Priya — Bed 4"; "Priya — BK-M3X9K2" makes them open the app
+    # their lock screen can act on "Priya - Bed 4"; "Priya - BK-M3X9K2" makes them open the app
     # just to work out who is asking.
     beds = [x.get('id') for x in ((b.get('bookingContext') or {}).get('beds') or []) if x.get('id')]
     bed_label = ('Bed ' + ', '.join(str(x) for x in beds)) if beds else (b.get('bookingId') or booking_id)
@@ -1232,7 +1232,7 @@ def chat_send():
     if sender_role == 'guest':
         _write_notification({
             "type": "chat_message", "audience": "owner",
-            "title": f"{b.get('guestName') or 'Guest'} — {bed_label}",
+            "title": f"{b.get('guestName') or 'Guest'} - {bed_label}",
             "message": preview,
             "ownerUid": b.get('ownerUid'), "propertyId": b.get('propertyId'), "bookingId": booking_id,
         })
@@ -1252,7 +1252,7 @@ def chat_send():
 # ==========================================
 # The Storage rules now set `allow read: if false` on every folder containing
 # personal data. Previously they said `request.auth != null`, which meant ANY
-# account — including one made in thirty seconds with a throwaway number — could
+# account - including one made in thirty seconds with a throwaway number - could
 # download every guest's Aadhaar photo in the whole bucket.
 #
 # Files are now reachable only through here, and only by admin or by the owner of
@@ -1261,7 +1261,7 @@ def _file_belongs_to_property(path, property_id):
     """True only if this exact storage path is referenced by a document of that property.
 
     payoutDocs carry the business id in the path itself. Everything else is reachable only
-    through the document that stored the path, and that document carries propertyId — so we
+    through the document that stored the path, and that document carries propertyId - so we
     look the path up rather than trusting the caller.
     """
     if not path or not property_id:
@@ -1332,7 +1332,7 @@ def secure_file():
         url = blob.generate_signed_url(expiration=timedelta(minutes=10), method='GET')
         return jsonify({"url": url, "expiresInMinutes": 10})
     except Exception as e:
-        print(f"❌ secure-file error: {e}")
+        print(f"[X] secure-file error: {e}")
         return jsonify({"error": "Could not generate a link for this file."}), 500
 
 
@@ -1341,7 +1341,7 @@ def secure_file():
 # ==========================================
 # The new Firestore rules need an `ownerUid` field on every booking and payout.
 # Rather than making you run a Node script locally, just open this URL once while
-# logged in as admin — the app will fetch it with your admin token.
+# logged in as admin - the app will fetch it with your admin token.
 #
 # Safe to run more than once: documents that already have ownerUid are skipped.
 @app.route('/admin/backfill-owner-uid', methods=['POST'])
@@ -1387,7 +1387,7 @@ def backfill_owner_uid():
         doc.reference.update({'ownerUid': uid})
         report["payouts"]["updated"] += 1
 
-    print(f"✅ Backfill complete: {report}")
+    print(f"[OK] Backfill complete: {report}")
     return jsonify({"ok": True, "report": report})
 
 
@@ -1395,7 +1395,7 @@ def backfill_owner_uid():
 # 8b. HIDE OWNER PHONE NUMBERS FROM THE PUBLIC LISTING
 # ==========================================
 # `businesses` is world-readable (listings have to be), and the owner's phone number was
-# sitting inside businessProfile — so anyone could scrape every hostel owner's number in
+# sitting inside businessProfile - so anyone could scrape every hostel owner's number in
 # the app without even making an account. This moves each number into a private
 # businessContacts/{businessId} document that only admin and that owner can read.
 #
@@ -1407,7 +1407,7 @@ def secure_payout_details():
     """
     Moves payoutDetails and legalDetails OUT of the world-readable businesses documents.
 
-    `businesses` has to stay public — that's how listings are browsed — but it was also
+    `businesses` has to stay public - that's how listings are browsed - but it was also
     holding each owner's bank account number, IFSC, UPI ID, licence and GST. Anyone could
     read every one of them without so much as creating an account.
 
@@ -1490,7 +1490,7 @@ def hide_owner_phones():
 # them once they lapse. Call this from a free cron service (cron-job.org) every
 # 10 minutes, or hit it manually if beds look stuck.
 # ==========================================
-# DAILY REMINDERS — run once a day from cron-job.org
+# DAILY REMINDERS - run once a day from cron-job.org
 # ==========================================
 # Three things nobody was being told:
 #   1. Guest forgets they are due to arrive tomorrow.
@@ -1510,7 +1510,7 @@ def _cron_authorised():
 # ==========================================
 # PROPERTY VIEWS
 # ==========================================
-# An owner's single question is "are people seeing my hostel?" — and until now the app had
+# An owner's single question is "are people seeing my hostel?" - and until now the app had
 # no answer, which is the main reason a listing owner stops opening the app after week one.
 #
 # Counted server-side, not from the browser, so the number can't be inflated by a script.
@@ -1536,7 +1536,7 @@ def _audit(action, actor_uid, actor_role, target=None, detail=None):
             "at": _dt_now_iso(),
         })
     except Exception as e:
-        print(f"⚠️ audit write failed (ignored): {e}")
+        print(f"[!] audit write failed (ignored): {e}")
 
 
 @app.route('/staff/me', methods=['POST'])
@@ -1545,6 +1545,176 @@ def _audit(action, actor_uid, actor_role, target=None, detail=None):
 def staff_me():
     """Tells the app which staff screen to show after login."""
     return jsonify({"ok": True, "role": request.staff_role})
+
+
+@app.route('/booking/release-beds', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_auth
+def booking_release_beds():
+    """Free the beds a booking held, and remove its hold.
+
+    The owner has to be able to do this - it is check-out and no-show, the ordinary end of
+    every stay - but the bedLock belongs to the guest and only its holder or an admin may
+    delete it. No Firestore rule can express "the owner of this property, for this booking",
+    because that needs two documents. So the server checks it instead.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    if not booking_id:
+        return jsonify({"error": "bookingId is required."}), 400
+
+    snap = firestore_db.collection('bookings').document(booking_id).get()
+    if not snap.exists:
+        return jsonify({"error": "Booking not found."}), 404
+    b = snap.to_dict() or {}
+
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    if not is_admin and b.get('ownerUid') != request.uid:
+        return jsonify({"error": "Ye booking aapki property ki nahi hai."}), 403
+
+    property_id = (b.get('propertyId') or '').strip()
+    bed_ids = [str(x.get('id')) for x in ((b.get('bookingContext') or {}).get('beds') or [])
+               if isinstance(x, dict) and x.get('id')]
+
+    freed = 0
+    if property_id and bed_ids:
+        ref = firestore_db.collection('businesses').document(property_id)
+        biz = ref.get()
+        if biz.exists:
+            rooms = (biz.to_dict() or {}).get('roomsAndBeds') or []
+            for room in rooms:
+                for bed in (room.get('beds') or []) if isinstance(room, dict) else []:
+                    if isinstance(bed, dict) and str(bed.get('id')) in bed_ids:
+                        bed['status'] = 'available'
+                        bed['occupiedBookingId'] = None
+                        freed += 1
+            if freed:
+                ref.set({"roomsAndBeds": rooms}, merge=True)
+
+    lock_removed = False
+    lock_id = (b.get('lockId') or '').strip()
+    if lock_id:
+        try:
+            firestore_db.collection('bedLocks').document(lock_id).delete()
+            lock_removed = True
+        except Exception as e:
+            print("could not remove bedLock %s: %s" % (lock_id, e))
+
+    _audit("beds_released", request.uid, "admin" if is_admin else "owner", booking_id,
+           "%d bed(s)%s" % (freed, ", lock cleared" if lock_removed else ""))
+    return jsonify({"ok": True, "bedsFreed": freed, "lockRemoved": lock_removed})
+
+
+@app.route('/bed/clear-stale-lock', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_auth
+def bed_clear_stale_lock():
+    """Remove a hold that was abandoned, so the next guest can take that bed.
+
+    Only ever removes a hold that is BOTH unconfirmed AND older than the expiry window. A
+    confirmed hold, or one that is still inside its window, is refused - that is somebody's
+    live booking.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    lock_id = (data.get("lockId") or "").strip()
+    if not lock_id or len(lock_id) > 200:
+        return jsonify({"error": "lockId is required."}), 400
+
+    ref = firestore_db.collection('bedLocks').document(lock_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify({"ok": True, "cleared": False, "reason": "already gone"})
+    lock = snap.to_dict() or {}
+
+    if lock.get('confirmed') is True:
+        return jsonify({"error": "Ye bed book ho chuka hai.", "cleared": False}), 409
+
+    locked_at = lock.get('lockedAt')
+    age_ok = False
+    try:
+        when = _dt.datetime.fromisoformat(str(locked_at).replace('Z', '+00:00'))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        age_ok = (_dt.datetime.now(_dt.timezone.utc) - when) >= _dt.timedelta(hours=BED_LOCK_HOURS)
+    except Exception:
+        age_ok = locked_at in (None, "")      # no timestamp at all is itself stale
+
+    if not age_ok:
+        return jsonify({"error": "Ye bed abhi kisi aur ke paas hai.", "cleared": False}), 409
+
+    ref.delete()
+    _audit("stale_lock_cleared", request.uid, "guest", lock_id, str(locked_at))
+    return jsonify({"ok": True, "cleared": True})
+
+
+@app.route('/staff/search', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_staff
+def staff_search():
+    """Find bookings by the caller's phone number, or by their booking id.
+
+    This has to be a server route. Firestore rules cannot say "staff may read any booking":
+    the read rule tests guestUid / ownerUid, and a query that does not constrain those fields
+    is rejected whole. The browser-side lookup this replaces failed on every call.
+
+    The browser is sent a masked number. The real one comes only from /staff/reveal-phone,
+    which writes its own audit row.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    q = (data.get("q") or "").strip()
+    if len(q) < 4:
+        return jsonify({"error": "Kam se kam 4 akshar likhiye."}), 400
+    if len(q) > 40:
+        return jsonify({"error": "Itna lamba nahi."}), 400
+
+    digits = _re.sub(r"\D", "", q)
+    rows = []
+    try:
+        if len(digits) == 10:
+            snaps = firestore_db.collection('bookings') \
+                .where('guestPhone', '==', digits).limit(20).get()
+        else:
+            snaps = firestore_db.collection('bookings') \
+                .where('bookingId', '==', q.upper()).limit(10).get()
+        for d in snaps:
+            b = d.to_dict() or {}
+            ctx = b.get('bookingContext') or {}
+            beds = [str(x.get('id')) for x in (ctx.get('beds') or [])
+                    if isinstance(x, dict) and x.get('id')]
+            rows.append({
+                "docId": d.id,
+                "bookingId": b.get('bookingId') or d.id,
+                "status": b.get('status') or '',
+                "guestName": b.get('guestName') or '',
+                "hostelName": b.get('hostelName') or '',
+                "propertyId": b.get('propertyId') or '',
+                "amount": b.get('amount') or 0,
+                "beds": beds,
+                "joiningDate": ctx.get('joiningDate') or b.get('joiningDate') or '',
+                "createdAt": str(b.get('createdAt') or '')[:19],
+                "phoneMasked": _asst_mask_phone(b.get('guestPhone') or ''),
+            })
+    except Exception as e:
+        print("staff search failed:", e)
+        return jsonify({"error": "Search nahi ho paya. Dobara koshish kijiye."}), 500
+
+    rows.sort(key=lambda r: r.get('createdAt') or '', reverse=True)
+
+    # Looking a guest up is itself worth recording. Before this, only pressing Reveal was
+    # logged - so "who did this agent pull up today" had no answer at all.
+    _audit("support_search", request.uid, getattr(request, 'staff_role', ''),
+           q, "%d mile" % len(rows))
+
+    return jsonify({"ok": True, "count": len(rows), "bookings": rows})
 
 
 @app.route('/staff/reveal-phone', methods=['POST'])
@@ -1565,8 +1735,8 @@ def staff_reveal_phone():
     # A field executive lists hostels and a verifier inspects them. Neither has any reason to
     # see a guest's phone number, and the fewer people who can, the smaller the leak when one
     # of them leaves.
-    if getattr(request, 'staff_role', '') not in ('support', 'admin'):
-        return jsonify({"error": "Ye sirf support aur admin ke liye hai."}), 403
+    if getattr(request, 'staff_role', '') not in _CAN_SEE_GUEST_PHONE:
+        return jsonify({"error": "Ye sirf customer care aur admin ke liye hai."}), 403
 
     data = request.get_json(silent=True, force=True) or {}
     booking_id = (data.get("bookingId") or "").strip()
@@ -1589,7 +1759,7 @@ def staff_reveal_phone():
 @require_staff
 def staff_escalate():
     """
-    Everything support cannot do themselves — refunds, verification, confirming a payment —
+    Everything support cannot do themselves - refunds, verification, confirming a payment -
     comes here rather than as a WhatsApp message to the admin. It lands in the admin feed
     with the booking attached, and there is a record that it was raised and when.
     """
@@ -1612,10 +1782,18 @@ def staff_escalate():
         "type": "staff_escalation", "audience": "admin",
         "bookingId": booking_id or None,
         "title": "Escalated by support",
-        "message": reason + (f" — {guest} ({booking_id})" if booking_id else ""),
+        "message": reason + (f" - {guest} ({booking_id})" if booking_id else ""),
     })
     _audit("escalate", request.uid, request.staff_role, booking_id, reason)
     return jsonify({"ok": True})
+
+
+# "staff" is the combined role: field work, sales and customer care in one person, which is
+# how a two-person team actually runs. The older single-job roles still work - nothing that
+# was granted before needs changing - and "verifier" stays deliberately apart, because the
+# person who lists a hostel must not be the person who certifies it.
+_STAFF_ROLES = ("staff", "support", "field", "verifier")
+_CAN_SEE_GUEST_PHONE = ("staff", "support", "admin")
 
 
 @app.route('/admin/staff', methods=['POST'])
@@ -1627,7 +1805,7 @@ def admin_manage_staff():
     write this collection they could promote themselves, and the whole role system would be
     decoration.
 
-    Removing access is `active: false`, never a delete — the audit trail needs to keep saying
+    Removing access is `active: false`, never a delete - the audit trail needs to keep saying
     who this uid was.
     """
     if not firestore_db:
@@ -1645,13 +1823,13 @@ def admin_manage_staff():
     if action == "create":
         # Make the login and grant the role in one go. The admin never sees a uid.
         # firestore_db is checked at the top of this route, and it is only ever set inside the
-        # same try block that imports fb_auth — so if we are here, fb_auth exists.
+        # same try block that imports fb_auth - so if we are here, fb_auth exists.
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
         name = (data.get("name") or "").strip()[:80]
         role = data.get("role")
-        if role not in ("support", "field", "verifier"):
-            return jsonify({"error": "role must be support, field or verifier."}), 400
+        if role not in _STAFF_ROLES:
+            return jsonify({"error": "role must be one of: %s." % ", ".join(_STAFF_ROLES)}), 400
         if not _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
             return jsonify({"error": "Email theek nahi hai."}), 400
         if len(password) < 8:
@@ -1664,7 +1842,7 @@ def admin_manage_staff():
             new_user = fb_auth.create_user(email=email, password=password, display_name=name)
         except Exception as e:
             # Almost always "email already exists". Rather than making the admin go hunting,
-            # attach the role to the account that is already there — but never silently reset
+            # attach the role to the account that is already there - but never silently reset
             # somebody's password, so the password field is ignored in that case.
             try:
                 new_user = fb_auth.get_user_by_email(email)
@@ -1697,12 +1875,16 @@ def admin_manage_staff():
 
     if action == "set":
         role = data.get("role")
-        if role not in ("support", "field", "verifier"):
-            return jsonify({"error": "role must be support, field or verifier."}), 400
-        # An admin must never be demoted into a staff role by accident — that would silently
+        if role not in _STAFF_ROLES:
+            return jsonify({"error": "role must be one of: %s." % ", ".join(_STAFF_ROLES)}), 400
+        # An admin must never be demoted into a staff role by accident - that would silently
         # cut their own access.
         if firestore_db.collection('admin').document(uid).get().exists:
             return jsonify({"error": "That user is an admin. Remove them from admin first."}), 400
+        try:
+            fb_auth.update_user(uid, disabled=False)     # undo an earlier disable
+        except Exception as e:
+            print("could not unlock the auth account for %s: %s" % (uid, e))
         firestore_db.collection('staffRoles').document(uid).set({
             "role": role,
             "active": True,
@@ -1714,10 +1896,29 @@ def admin_manage_staff():
         return jsonify({"ok": True})
 
     if action == "disable":
+        if not firestore_db.collection('staffRoles').document(uid).get().exists:
+            # Without this, any string sent as a uid creates a junk staffRoles document.
+            return jsonify({"error": "Ye staff nahi mila."}), 404
         firestore_db.collection('staffRoles').document(uid).set(
             {"active": False, "updatedAt": _dt_now_iso()}, merge=True)
-        _audit("staff_disable", request.uid, "admin", uid, "")
-        return jsonify({"ok": True})
+        # The screen promises "wo turant logout ho jayega". Flipping a flag in Firestore does
+        # not do that on its own: the account can still sign in and an open tab keeps its token
+        # for up to an hour. Disable the account and revoke what is already issued.
+        locked_out = True
+        try:
+            fb_auth.update_user(uid, disabled=True)
+            fb_auth.revoke_refresh_tokens(uid)
+        except Exception as e:
+            locked_out = False
+            print("could not lock the auth account for %s: %s" % (uid, e))
+        _audit("staff_disable", request.uid, "admin", uid,
+               "locked out" if locked_out else "role off, auth account NOT locked")
+        return jsonify({
+            "ok": True, "lockedOut": locked_out,
+            "message": "Access band. Wo turant bahar ho gaya." if locked_out else
+                       "Role band kar diya, par uska login account band nahi ho paya. "
+                       "Firebase Console me jaakar account disable kar dijiye.",
+        })
 
     return jsonify({"error": "Unknown action."}), 400
 
@@ -1726,7 +1927,7 @@ def admin_manage_staff():
 @limiter.limit("60 per hour")
 @require_admin
 def admin_audit():
-    """Most recent activity first — what you actually want when checking on someone."""
+    """Most recent activity first - what you actually want when checking on someone."""
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
     from google.cloud.firestore_v1 import Query
@@ -1760,7 +1961,7 @@ def track_view():
             kind: _fs.Increment(1),
         }, merge=True)
     except Exception as e:
-        print(f"⚠️ view tracking failed (ignored): {e}")
+        print(f"[!] view tracking failed (ignored): {e}")
     return jsonify({"ok": True}), 200
 
 
@@ -1871,7 +2072,7 @@ def daily_reminders():
         late_by_owner[key][0] += 1
         late_by_owner[key][1] += amount
 
-    # One summary per owner rather than one message per late guest — five separate pings
+    # One summary per owner rather than one message per late guest - five separate pings
     # about the same thing is how people learn to ignore notifications.
     for (owner_uid, prop_id), (count, total) in late_by_owner.items():
         if not owner_uid:
@@ -1886,7 +2087,7 @@ def daily_reminders():
     # ---- Identity documents older than 30 days: delete the file, keep the record ----
     purged = _purge_expired_id_documents()
 
-    print(f"⏰ daily reminders: arriving={arriving} leaving={leaving} overdue={overdue} purged={purged}")
+    print(f"[cron] daily reminders: arriving={arriving} leaving={leaving} overdue={overdue} purged={purged}")
     return jsonify({"ok": True, "arriving": arriving, "leaving": leaving,
                     "overdue": overdue, "idDocsPurged": purged})
 
@@ -1917,7 +2118,7 @@ def _purge_expired_id_documents():
     try:
         bucket = fb_storage.bucket()
     except Exception as e:
-        print(f"⚠️  id purge skipped, no storage bucket: {e}")
+        print(f"[!]  id purge skipped, no storage bucket: {e}")
         return 0
 
     def _drop(path):
@@ -1930,7 +2131,7 @@ def _purge_expired_id_documents():
                 blob.delete()
             return True
         except Exception as err:
-            print(f"⚠️  could not delete {path}: {err}")
+            print(f"[!]  could not delete {path}: {err}")
             return False
 
     purged = 0
@@ -1968,12 +2169,12 @@ def _purge_expired_id_documents():
             purged += 1
 
     if purged:
-        print(f"🧹 purged ID documents for {purged} stay(s) older than {ID_RETENTION_DAYS} days")
+        print(f"[purge] purged ID documents for {purged} stay(s) older than {ID_RETENTION_DAYS} days")
     return purged
 
 
 # ==========================================
-# IN-APP ASSISTANT  — "Poochho"
+# IN-APP ASSISTANT  - "Poochho"
 #
 # A question box inside the Admin Console and the Field Desk. It is NOT a chatbot for
 # guests and it is NOT connected to anyone's personal Claude account: the question goes
@@ -1988,12 +2189,17 @@ def _purge_expired_id_documents():
 # ==========================================
 
 ASSISTANT_MODEL = "claude-haiku-4-5-20251001"
-ASSISTANT_DAILY_LIMIT = {"admin": 200, "support": 40, "field": 30, "verifier": 30}
+# How long an unconfirmed hold blocks a bed. The frontend uses the same number; manual UPI
+# verification takes hours, not minutes, so a short window would reclaim a bed out from under
+# a payment that was still being checked.
+BED_LOCK_HOURS = 48
+
+ASSISTANT_DAILY_LIMIT = {"admin": 200, "staff": 50, "support": 40, "field": 30, "verifier": 30}
 ASSISTANT_MAX_QUESTION = 500
 
 
 def _asst_mask_phone(p):
-    """98XXXXXX21 — enough to match a number you already have, useless to anyone else."""
+    """98XXXXXX21 - enough to match a number you already have, useless to anyone else."""
     d = ''.join(ch for ch in str(p or '') if ch.isdigit())
     if len(d) < 6:
         return ''
@@ -2090,7 +2296,7 @@ def _asst_admin_snapshot():
         touched = str(l.get('lastContactedAt') or l.get('updatedAt') or '')[:10]
         if st == 'contacted' and touched and touched < (today - _d.timedelta(days=7)).isoformat():
             stale.append({'name': l.get('name'), 'district': dist, 'lastTouched': touched,
-                          'assignedTo': l.get('assignedName') or '—'})
+                          'assignedTo': l.get('assignedName') or '-'})
 
     staff = []
     for doc in firestore_db.collection('staffRoles').stream():
@@ -2127,7 +2333,7 @@ def _asst_admin_snapshot():
 
 def _asst_field_snapshot(uid, name):
     """A field executive sees their own work and nothing else. This function is the
-    boundary — if a field of someone else's ever appears here, it is a data leak."""
+    boundary - if a field of someone else's ever appears here, it is a data leak."""
     import datetime as _d
     today = _d.date.today()
     month = today.strftime('%Y-%m')
@@ -2169,12 +2375,12 @@ ASSISTANT_SYSTEM = (
     "You are the HostelOM in-app assistant. HostelOM is a hostel and PG booking platform in "
     "Chhattisgarh, India, run by a very small team.\n\n"
     "Answer ONLY from the DATA block given to you. It is a snapshot taken a moment ago. If the "
-    "answer is not in it, say so plainly — never guess a number, a name or a date.\n\n"
+    "answer is not in it, say so plainly - never guess a number, a name or a date.\n\n"
     "Reply in Hinglish (Hindi written in the Roman alphabet, mixed with English), short and "
     "direct, the way a colleague would. No preamble, no bullet lists unless you are listing "
     "several items. Rupee amounts as 'Rs 4,200'.\n\n"
     "Phone numbers in the data are deliberately masked. Never claim to know a full number and "
-    "never try to reconstruct one. You cannot change anything — you can only look. If asked to "
+    "never try to reconstruct one. You cannot change anything - you can only look. If asked to "
     "change, cancel, refund or message someone, say which screen in the app does that instead."
 )
 
@@ -2209,7 +2415,7 @@ def assistant_ask():
     try:
         data = _asst_admin_snapshot() if role == 'admin' else _asst_field_snapshot(request.uid, name)
     except Exception as e:
-        print(f"❌ assistant snapshot failed: {e}")
+        print(f"[X] assistant snapshot failed: {e}")
         return jsonify({"error": "Data padhne me dikkat aayi. Dobara try kijiye."}), 500
 
     who = "the platform admin" if role == 'admin' else ("a %s executive named %s" % (role, name))
@@ -2226,11 +2432,11 @@ def assistant_ask():
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=45)
     except Exception as e:
-        print(f"❌ assistant call failed: {e}")
+        print(f"[X] assistant call failed: {e}")
         return jsonify({"error": "Assistant tak nahi pahunch paya. Dobara try kijiye."}), 502
 
     if r.status_code != 200:
-        print(f"❌ assistant HTTP {r.status_code}: {r.text[:400]}")
+        print(f"[X] assistant HTTP {r.status_code}: {r.text[:400]}")
         msg = "Assistant ne jawab nahi diya."
         if r.status_code == 401:
             msg = "API key galat hai ya chalu nahi hai."
@@ -2262,7 +2468,7 @@ def assistant_ask():
 
 
 # =====================================================================
-# ACCOUNT DELETION  — Google Play requires an in-app route to delete your
+# ACCOUNT DELETION  - Google Play requires an in-app route to delete your
 # account and data, and the Privacy Policy promises one. There was none.
 #
 # Bookings are NOT deleted. A hostel has to keep a record of who stayed, and a
@@ -2303,7 +2509,7 @@ def account_delete():
     anonymised = 0
     now_iso = _d.datetime.now(_d.timezone.utc).isoformat()
 
-    # 1. Identity documents and the registration PDF — gone.
+    # 1. Identity documents and the registration PDF - gone.
     for doc in firestore_db.collection('guestRegistrations').where('guestUid', '==', uid).stream():
         d = doc.to_dict() or {}
         if bucket:
@@ -2316,10 +2522,10 @@ def account_delete():
                             blob.delete()
                             removed_files += 1
                     except Exception as err:
-                        print(f"⚠️  delete {path}: {err}")
+                        print(f"[!]  delete {path}: {err}")
         doc.reference.delete()
 
-    # 2. Past bookings — anonymised, not deleted.
+    # 2. Past bookings - anonymised, not deleted.
     for doc in firestore_db.collection('bookings').where('guestUid', '==', uid).stream():
         doc.reference.update({
             "guestUid": None,
@@ -2331,7 +2537,7 @@ def account_delete():
         })
         anonymised += 1
 
-    # 3. Push tokens — otherwise a deleted account keeps buzzing a phone.
+    # 3. Push tokens - otherwise a deleted account keeps buzzing a phone.
     for doc in firestore_db.collection('deviceTokens').where('uid', '==', uid).stream():
         doc.reference.delete()
 
@@ -2339,9 +2545,9 @@ def account_delete():
     try:
         firestore_db.collection('users').document(uid).delete()
     except Exception as err:
-        print(f"⚠️  users/{uid} delete: {err}")
+        print(f"[!]  users/{uid} delete: {err}")
 
-    # 5. A record that the deletion happened — required to answer a regulator, and
+    # 5. A record that the deletion happened - required to answer a regulator, and
     #    it holds no personal data, only the uid that no longer belongs to anyone.
     try:
         firestore_db.collection('auditLog').add({
@@ -2351,11 +2557,11 @@ def account_delete():
     except Exception:
         pass
 
-    # 6. The login itself, last — if anything above failed, the user can retry.
+    # 6. The login itself, last - if anything above failed, the user can retry.
     try:
         _auth.delete_user(uid)
     except Exception as err:
-        print(f"⚠️  auth delete {uid}: {err}")
+        print(f"[!]  auth delete {uid}: {err}")
         return jsonify({"error": "Your data was removed but the login could not be closed. "
                                  "Please contact support@ho-om.in."}), 500
 
@@ -2376,7 +2582,7 @@ def cleanup_locks():
     for doc in firestore_db.collection('bedLocks').stream():
         d = doc.to_dict() or {}
         if d.get('confirmed'):
-            continue    # a confirmed lock is a real booking — never touch it
+            continue    # a confirmed lock is a real booking - never touch it
         exp = d.get('expiresAt')
         try:
             if exp and hasattr(exp, 'timestamp') and exp < now:
@@ -2404,13 +2610,13 @@ def health_check():
 
 
 # ============================================================================
-#  LEADS  —  hostel jo abhi hamare hain, malik ke nahi
+#  LEADS  -  hostel jo abhi hamare hain, malik ke nahi
 # ----------------------------------------------------------------------------
 #  Ye alag collection hai, `businesses` nahi. Wajah:
-#  firestore.rules me businesses par `allow read: if true` hai — matlab wo
+#  firestore.rules me businesses par `allow read: if true` hai - matlab wo
 #  duniya ke liye khula hai (listing dikhani hi padti hai). Agar 226 hostel
 #  ka naam-pata-phone wahan daal diya, to "live nahi hai" ka koi matlab nahi
-#  rehta — koi bhi query karke sab utaar sakta hai.
+#  rehta - koi bhi query karke sab utaar sakta hai.
 #  `leads` ko rules me admin/staff tak seemit rakha gaya hai.
 #
 #  Lead ka safar:  new -> contacted -> agreed / refused -> converted
@@ -2449,7 +2655,7 @@ def import_leads():
     """Ek saath kai lead daalna.
 
     PEHLE ye har lead ke liye alag se Firestore se poochhta tha ki wo pehle se hai
-    ya nahi, phir alag se likhta tha — 292 lead ka matlab 584 chakkar, ek-ek karke.
+    ya nahi, phir alag se likhta tha - 292 lead ka matlab 584 chakkar, ek-ek karke.
     Itni der me browser ka rishta toot jata tha ("Failed to fetch").
     Ab: maujooda placeId EK baar me padhe jaate hain, aur likhai batch me hoti hai."""
     if not firestore_db:
@@ -2464,7 +2670,7 @@ def import_leads():
 
     col = firestore_db.collection('leads')
 
-    # Jo pehle se hain — ek hi baar me
+    # Jo pehle se hain - ek hi baar me
     existing = set()
     for d in col.select(['placeId']).stream():
         pid = (d.to_dict() or {}).get('placeId')
@@ -2494,7 +2700,7 @@ def import_leads():
 
         # Rating, review ki ginti aur thappa bhi rakhe jaate hain.
         # Kyun: bina inke caller ko pata hi nahi chalta ki pehle kise phone kare.
-        # 637 review wala hostel aur 1 review wala — dono ek jaise dikhte the,
+        # 637 review wala hostel aur 1 review wala - dono ek jaise dikhte the,
         # aur caller kram se chalta rehta tha. Ab bade aur achhe upar aa jaate hain.
         # 'locality' alag rakha hai taaki "Pandri ke 12" ek saath nikal sakein.
         try:
@@ -2563,7 +2769,7 @@ def list_leads():
     gender = (request.args.get('gender') or '').strip()
     if gender:
         q = q.where('gender', '==', gender)
-    # Rajya aur shahar se bhi chhaant — jab doosre rajya me kaam shuru hoga to
+    # Rajya aur shahar se bhi chhaant - jab doosre rajya me kaam shuru hoga to
     # sirf jila kaafi nahi rahega (do rajyon me ek hi naam ka jila ho sakta hai).
     state = (request.args.get('state') or '').strip()
     if state:
@@ -2575,7 +2781,7 @@ def list_leads():
     if locality:
         q = q.where('locality', '==', locality)
 
-    # "Mere kaam" — staff ko sirf apne saunpe hue lead
+    # "Mere kaam" - staff ko sirf apne saunpe hue lead
     assigned = (request.args.get('assignedTo') or '').strip()
     if assigned:
         if assigned == 'me':
@@ -2596,7 +2802,7 @@ def list_leads():
 @require_staff
 def update_lead():
     """Caller ya field staff har baat ke baad yahi maarta hai.
-    Har entry me kaun aur kab likha jata hai — baad me hisaab dikh sake."""
+    Har entry me kaun aur kab likha jata hai - baad me hisaab dikh sake."""
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
 
@@ -2615,7 +2821,7 @@ def update_lead():
     status = (body.get('status') or '').strip()
     if status:
         if status == 'converted':
-            return jsonify({"error": "converted khud se nahi hota — /admin/leads/link se hota hai"}), 400
+            return jsonify({"error": "converted khud se nahi hota - /admin/leads/link se hota hai"}), 400
         if status not in LEAD_STATUSES:
             return jsonify({"error": "status galat hai"}), 400
         upd['status'] = status
@@ -2638,7 +2844,7 @@ def update_lead():
     if owner_name:
         upd['ownerName'] = owner_name
 
-    # Kaam ki tick-list — kya-kya karna baaki hai.
+    # Kaam ki tick-list - kya-kya karna baaki hai.
     # Field officer ko dobara poochhna na pade ki "yahan karna kya hai".
     if isinstance(body.get('tasks'), list):
         upd['tasks'] = [str(t)[:40] for t in body['tasks']][:12]
@@ -2649,7 +2855,7 @@ def update_lead():
         upd['assignedName'] = (body.get('assignedName') or '').strip()
         upd['assignedAt'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
-    # Malik ki ijazat — kisne li, kab li. Baad me koi kahe "maine to kaha hi
+    # Malik ki ijazat - kisne li, kab li. Baad me koi kahe "maine to kaha hi
     # nahi tha", to record maujood rahe.
     if body.get('consent') is True:
         upd['consent'] = True
@@ -2665,10 +2871,10 @@ def update_lead():
 @require_admin
 def link_lead_to_owner():
     """Malik raazi ho gaya. Uske phone number se uski UID dhoondhi jati hai,
-    aur lead se ek asli listing ban jati hai — usi ke naam par.
+    aur lead se ek asli listing ban jati hai - usi ke naam par.
 
     Malik ko PEHLE app me OTP se ek baar login karna hoga, tabhi uski UID
-    banti hai. Login nahi kiya to yahan 404 aayega — wo galti nahi, yaad
+    banti hai. Login nahi kiya to yahan 404 aayega - wo galti nahi, yaad
     dilana hai ki pehle login karwaiye."""
     if not firestore_db:
         return jsonify({"error": "Server not fully configured."}), 500
@@ -2716,7 +2922,7 @@ def link_lead_to_owner():
     biz = {
         'businessName':   lead.get('name', ''),
         # NOTE: malik ka phone yahan JAAN-BUJH KE nahi hai.
-        # `businesses` par rules me `allow read: if true` hai — duniya padh sakti hai.
+        # `businesses` par rules me `allow read: if true` hai - duniya padh sakti hai.
         # Phone businessContacts/{businessId} me jata hai, jahan sirf admin aur
         # khud malik padh sakta hai. (Isi wajah se /admin/hide-owner-phones bana tha.)
         'businessProfile': {
@@ -2761,16 +2967,16 @@ def link_lead_to_owner():
         'updatedAt':  now,
     })
 
-    print(f"✅ Lead {lead_id} -> business {new_ref.id} (owner {uid})")
+    print(f"[OK] Lead {lead_id} -> business {new_ref.id} (owner {uid})")
     return jsonify({"ok": True, "businessId": new_ref.id, "ownerUid": uid,
                     "next": "Field officer ab photo, naksha aur rate bhar sakta hai"})
 
 
 # ============================================================
-#  SYSTEM HEALTH  —  Render, Sentry aur GitHub ek hi jagah
+#  SYSTEM HEALTH  -  Render, Sentry aur GitHub ek hi jagah
 # ------------------------------------------------------------
 #  Ye teenon ke token SERVER pe rehte hain (Render ke Environment me).
-#  Browser me kabhi nahi jaate — isiliye ye kaam yahan hota hai, app me nahi.
+#  Browser me kabhi nahi jaate - isiliye ye kaam yahan hota hai, app me nahi.
 #  Har hisse ki apni jaanch hai: ek seva band ho to baaki phir bhi dikhengi.
 # ============================================================
 
@@ -2802,8 +3008,8 @@ def _render_health():
         busy = st in ("build_in_progress", "update_in_progress", "created", "queued")
         return {
             "state": "green" if good else ("yellow" if busy else "red"),
-            "title": "Render — backend",
-            "line": f"{st or 'pata nahi'} · {when}" + (f" · {msg}" if msg else ""),
+            "title": "Render - backend",
+            "line": f"{st or 'pata nahi'} - {when}" + (f" - {msg}" if msg else ""),
         }
     except Exception as e:
         return {"state": "red", "title": "Render", "line": f"Nahi pahunch paye: {e.__class__.__name__}"}
@@ -2824,10 +3030,10 @@ def _sentry_health():
             return {"state": "red", "title": "Sentry", "line": f"Jawab {r.status_code}"}
         issues = r.json() or []
         if not issues:
-            return {"state": "green", "title": "Sentry — errors",
+            return {"state": "green", "title": "Sentry - errors",
                     "line": "Pichhle 24 ghante me koi error nahi"}
         top = [f"{(i.get('title') or '')[:48]} ({i.get('count', '?')}x)" for i in issues[:3]]
-        return {"state": "red", "title": "Sentry — errors",
+        return {"state": "red", "title": "Sentry - errors",
                 "line": f"{len(issues)} error khule hain",
                 "detail": top}
     except Exception as e:
@@ -2856,12 +3062,12 @@ def _github_health():
         when = (w.get("updated_at") or "")[:16].replace("T", " ")
         title = (w.get("display_title") or w.get("name") or "")[:50]
         if st != "completed":
-            state, line = "yellow", f"chal raha hai · {title}"
+            state, line = "yellow", f"chal raha hai - {title}"
         elif con == "success":
-            state, line = "green", f"hara · {when} · {title}"
+            state, line = "green", f"hara - {when} - {title}"
         else:
-            state, line = "red", f"{con or 'fail'} · {when} · {title}"
-        return {"state": state, "title": "GitHub — website deploy", "line": line}
+            state, line = "red", f"{con or 'fail'} - {when} - {title}"
+        return {"state": state, "title": "GitHub - website deploy", "line": line}
     except Exception as e:
         return {"state": "red", "title": "GitHub", "line": f"Nahi pahunch paye: {e.__class__.__name__}"}
 
@@ -2887,10 +3093,10 @@ def system_health():
 @limiter.limit("30 per hour")
 @require_admin
 def change_owner_phone():
-    """Malik ka login number badalna — UID wahi rehti hai.
+    """Malik ka login number badalna - UID wahi rehti hai.
 
     Kyun zaroori: pehchan number se nahi, UID se hoti hai. Malik agar naye number
-    se login karega to Firebase NAYA account bana dega — nayi UID — aur uski
+    se login karega to Firebase NAYA account bana dega - nayi UID - aur uski
     listing, booking, rent sab purani UID se judi rah jayengi. Usko lagega sab
     kho gaya.
     Yahan hum usi UID par number badal dete hain, isliye kuch nahi tootta.
@@ -2930,7 +3136,7 @@ def change_owner_phone():
                 "hint": "Us account ko pehle hatana ya doosra number lena padega"
             }), 409
     except Exception:
-        pass  # kisi ke paas nahi hai — yahi chahiye
+        pass  # kisi ke paas nahi hai - yahi chahiye
 
     try:
         old = fb_auth.get_user(uid)
@@ -2962,7 +3168,7 @@ def change_owner_phone():
     except Exception as e:
         print(f"lead update chhoot gaya: {e}")
 
-    # audit log — kisne, kiska, kab badla
+    # audit log - kisne, kiska, kab badla
     try:
         firestore_db.collection('auditLog').add({
             'actorUid': getattr(request, 'uid', None),
@@ -2975,7 +3181,7 @@ def change_owner_phone():
         print(f"audit log chhoot gaya: {e}")
 
     return jsonify({"ok": True, "uid": uid, "oldPhone": old_phone, "newPhone": e164,
-                    "note": "UID wahi hai — listing, booking aur rent sab jude rahenge"})
+                    "note": "UID wahi hai - listing, booking aur rent sab jude rahenge"})
 
 
 
@@ -2983,10 +3189,10 @@ def change_owner_phone():
 @limiter.limit("120 per hour")
 @require_staff
 def attach_business_to_lead():
-    """Field officer ne lead se hostel bana diya — us listing ko lead se jod do.
+    """Field officer ne lead se hostel bana diya - us listing ko lead se jod do.
 
     /admin/leads/link se alag hai: wahan MALIK ki UID par listing banti hai.
-    Yahan listing pehle hi ban chuki hai — jo bhi logged-in tha uske naam par,
+    Yahan listing pehle hi ban chuki hai - jo bhi logged-in tha uske naam par,
     aksar field officer. Malik ka account baad me banega, tab admin use saunp
     dega. Rules me yahi likha hai: doorstep par bani listing us staff ki hai
     jab tak asli malik ka account nahi ban jaata."""
@@ -3029,7 +3235,7 @@ def repair_owner_links():
 
     Kyun: listing ka malik `ownerId` se pehchana jata hai, aur Business Dashboard
     wahi dhoondhta hai. Jo listing admin ne ya kisi purane raste se banayi thi,
-    unme `ownerId` khaali reh gaya — isliye malik login karta hai aur use apni
+    unme `ownerId` khaali reh gaya - isliye malik login karta hai aur use apni
     hi property nahi dikhti.
 
     Haath se sudharna matlab har listing ka phone dhoondho, Authentication me
@@ -3042,7 +3248,7 @@ def repair_owner_links():
       3. us listing se judi lead ka ownerPhone ya phone
 
     Kuch nahi mila to wo listing chhod di jaati hai aur report me naam ke saath
-    lautayi jaati hai — taaki aap sirf UNHI par dhyan dein, sab par nahi.
+    lautayi jaati hai - taaki aap sirf UNHI par dhyan dein, sab par nahi.
 
     dryRun: true bhejiye to kuch badla nahi jayega, sirf report aayegi.
     """
@@ -3127,6 +3333,6 @@ def repair_owner_links():
 
 
 if __name__ == '__main__':
-    print("🚀 Server started on port 5000!")
+    print("[up] Server started on port 5000!")
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
