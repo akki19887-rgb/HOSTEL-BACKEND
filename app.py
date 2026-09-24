@@ -2386,7 +2386,11 @@ def _asst_field_snapshot(uid, name):
     month = today.strftime('%Y-%m')
 
     my_leads, follow_ups = [], []
-    for doc in firestore_db.collection('leads').where('assignedUid', '==', uid).stream():
+    # Lead kiske paas hai - ye app har jagah 'assignedTo' me likhta hai (saunpne wala
+    # code, /admin/leads ki chhanni, aur "Mere kaam" wala box - teenon). Sirf yahan
+    # 'assignedUid' likha tha, jo kabhi kisi ne likha hi nahi. Isliye Poochho field
+    # staff ko hamesha "zero lead" batata tha, chahe unke paas pachaas hon.
+    for doc in firestore_db.collection('leads').where('assignedTo', '==', uid).stream():
         l = doc.to_dict() or {}
         row = {'name': l.get('name'), 'locality': l.get('locality'),
                'district': l.get('district') or l.get('city'),
