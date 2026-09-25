@@ -1800,6 +1800,7 @@ def listing_set_owner_phone():
     return jsonify({
         "ok": True,
         "claimed": claimed,
+        "flags": flags,
         "ownerUid": owner_uid or None,
         "note": ("Listing malik ke naam ho gayi." if claimed else
                  "Malik ne abhi login nahi kiya. Jaise hi wo isi number se pehli baar "
