@@ -3018,13 +3018,24 @@ def update_lead():
 
     upd = {'updatedAt': _dt.datetime.now(_dt.timezone.utc).isoformat()}
 
+    cur = (snap.to_dict() or {}).get('status') or ''
     status = (body.get('status') or '').strip()
     if status:
         if status == 'converted':
             return jsonify({"error": "converted khud se nahi hota - /admin/leads/link se hota hai"}), 400
         if status not in LEAD_STATUSES:
             return jsonify({"error": "status galat hai"}), 400
-        upd['status'] = status
+        # JUD CHUKI LEAD PEECHE NAHI JAYEGI.
+        #
+        # Pehle guard sirf 'converted' LIKHNE par tha. Us hostel par dobara visit
+        # log karte hi 'listed' -> 'agreed' bhej diya jata tha aur lead peeche chali
+        # jati thi: "Listing bani" ki ginti girti, "Hostel banao" button wapas aa
+        # jata, aur usi hostel ki doosri listing ban jati thi.
+        # Note phir bhi likha jata hai - wahi to kaam ka hai.
+        if cur == 'converted':
+            status = ''
+        else:
+            upd['status'] = status
 
     note = (body.get('note') or '').strip()
     if note:
