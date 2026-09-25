@@ -3167,6 +3167,12 @@ def link_lead_to_owner():
         'updatedAt':  now,
     })
 
+    # Ab ye kaam staff bhi karta hai, isliye nishaan chhodna zaroori hai:
+    # kisne, kaunsi lead, kis malik ke naam par joda.
+    _audit("lead_linked_to_owner", getattr(request, 'uid', None),
+           "admin" if getattr(request, 'staff_role', '') == 'admin' else "staff",
+           new_ref.id, "lead %s -> malik %s" % (lead_id, uid))
+
     print(f"[OK] Lead {lead_id} -> business {new_ref.id} (owner {uid})")
     return jsonify({"ok": True, "businessId": new_ref.id, "ownerUid": uid,
                     "next": "Field officer ab photo, naksha aur rate bhar sakta hai"})
