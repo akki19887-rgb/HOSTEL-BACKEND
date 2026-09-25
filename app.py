@@ -1760,7 +1760,37 @@ def listing_set_owner_phone():
     }
     if owner_name:
         contact["ownerName"] = owner_name
+
+    # Khali bheji gayi cheezein likhte nahi - warna edit karne par purani jaanch
+    # mit jayegi. Jo bheja gaya, wahi badlega.
+    for key, val in (("propertyId", property_id), ("personRole", person_role),
+                     ("regType", reg_type), ("regNumber", reg_number),
+                     ("portalNameMatch", portal_match), ("upiNameMatch", upi_match)):
+        if val:
+            contact[key] = val
+    if property_id or person_role:
+        contact["checkedBy"] = request.uid
+        contact["checkedAt"] = now
+
     firestore_db.collection('businessContacts').document(business_id).set(contact, merge=True)
+
+    # DHYAN DENE LAYAK BAAT ALAG SE DARJ HOTI HAI.
+    #
+    # Malik khud ho aur dono naam mil gaye ho - wo aam baat hai, uska alag record
+    # rakhne ka koi matlab nahi. Par saamne wala malik na ho, ya koi naam mel na
+    # khaye - to wo aapko baad me dhoondhne layak hona chahiye. Isliye wahi
+    # auditLog me jata hai.
+    flags = []
+    if person_role and person_role != "owner":
+        flags.append("saamne wala malik nahi: " + person_role)
+    if portal_match == "no":
+        flags.append("portal par naam alag")
+    if upi_match == "no":
+        flags.append("UPI par naam alag")
+    if flags:
+        _audit("listing_owner_check_flag", request.uid,
+               "admin" if is_admin else ("staff" if is_staff else "owner"),
+               business_id, "; ".join(flags))
 
     _audit("listing_owner_phone_set", request.uid,
            "admin" if is_admin else ("staff" if is_staff else "owner"),
