@@ -1655,6 +1655,155 @@ def owner_contact_save():
     return jsonify({"ok": True})
 
 
+def _claim_digits(phone):
+    """Number ke aakhri 10 ank. Kuch aur mila to khali."""
+    d = _re.sub(r"\D", "", phone or "")[-10:]
+    return d if len(d) == 10 else ""
+
+
+def _uid_for_phone(digits):
+    """Is number par koi account hai? UID lautao, warna khali."""
+    if not digits:
+        return ""
+    try:
+        return fb_auth.get_user_by_phone_number('+91' + digits).uid or ""
+    except Exception:
+        return ""
+
+
+@app.route('/listing/set-owner-phone', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_auth
+def listing_set_owner_phone():
+    """Listing ka malik uske PHONE se tay karo - jo bana raha hai usse nahi.
+
+    Pehle ownerId me wahi UID jati thi jo us waqt logged-in tha. Doorstep par wo
+    hamesha field officer hota hai, isliye har listing staff ke naam par ban jati
+    thi aur malik ko apni property dikhti hi nahi thi.
+
+    Ab: number par account mila to listing usi waqt malik ke naam. Nahi mila to
+    number businessContacts me claimPending ke saath rakh dete hain, aur malik ke
+    pehle login par /owner/claim-listings use apne aap saunp deta hai.
+
+    Number `businesses` me kabhi nahi jata - wo document duniya padh sakti hai.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    body = request.get_json(silent=True, force=True) or {}
+    business_id = (body.get('businessId') or '').strip()
+    phone = (body.get('phone') or '').strip()
+    owner_name = (body.get('ownerName') or '').strip()[:120]
+
+    if not business_id or len(business_id) > 200:
+        return jsonify({"error": "businessId chahiye"}), 400
+    digits = _claim_digits(phone)
+    if not digits:
+        return jsonify({"error": "10 ank ka number dijiye"}), 400
+
+    ref = firestore_db.collection('businesses').document(business_id)
+    snap = ref.get()
+    if not snap.exists:
+        return jsonify({"error": "Listing nahi mili"}), 404
+    biz = snap.to_dict() or {}
+    current_owner = (biz.get('ownerId') or '').strip()
+
+    is_admin = firestore_db.collection('admin').document(request.uid).get().exists
+    is_staff = bool(getattr(request, 'staff_role', None))
+    # Jo listing abhi khud banayi hai, ya admin, ya field staff - inke alawa koi
+    # doosre ki listing par apna number nahi chipka sakta.
+    if not (is_admin or is_staff or current_owner == request.uid):
+        return jsonify({"error": "Ye listing aapki nahi hai."}), 403
+
+    now = _dt_now_iso()
+    owner_uid = _uid_for_phone(digits)
+    claimed = False
+
+    if owner_uid and owner_uid != current_owner:
+        ref.set({"ownerId": owner_uid, "ownerAssignedAt": now}, merge=True)
+        claimed = True
+    elif owner_uid:
+        claimed = True   # pehle se sahi malik ke naam hai
+
+    contact = {
+        "ownerUid":     owner_uid or current_owner,
+        "phone":        digits,
+        "claimPhone":   digits,
+        "claimPending": (not owner_uid),
+        "updatedAt":    now,
+    }
+    if owner_name:
+        contact["ownerName"] = owner_name
+    firestore_db.collection('businessContacts').document(business_id).set(contact, merge=True)
+
+    _audit("listing_owner_phone_set", request.uid,
+           "admin" if is_admin else ("staff" if is_staff else "owner"),
+           business_id,
+           ("malik ki UID par saunp diya" if claimed else "malik ka login nahi mila - claimPending"))
+
+    return jsonify({
+        "ok": True,
+        "claimed": claimed,
+        "ownerUid": owner_uid or None,
+        "note": ("Listing malik ke naam ho gayi." if claimed else
+                 "Malik ne abhi login nahi kiya. Jaise hi wo isi number se pehli baar "
+                 "login karega, listing apne aap uske naam ho jayegi."),
+    })
+
+
+@app.route('/owner/claim-listings', methods=['POST'])
+@limiter.limit("30 per hour")
+@require_auth
+def owner_claim_listings():
+    """Malik pehli baar login kiya - uske number par padi listing use saunp do.
+
+    Field officer ne jo listing doorstep par banayi thi, uska number
+    businessContacts me claimPending ke saath rakha gaya tha. Yahan wahi uthaya
+    jata hai. Isse pehle ye kaam sirf admin kar sakta tha (/admin/leads/link),
+    aur har malik Ankit ke phone ka intezaar karta tha.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    # Number BHAROSE ka hona chahiye - isliye body se nahi, Firebase ke account se.
+    # Warna koi bhi kisi aur ka number bhej kar uski listing le leta.
+    try:
+        me = fb_auth.get_user(request.uid)
+        digits = _claim_digits(getattr(me, 'phone_number', '') or '')
+    except Exception:
+        digits = ""
+    if not digits:
+        return jsonify({"ok": True, "claimed": [], "note": "Is account par koi number nahi hai."})
+
+    try:
+        rows = firestore_db.collection('businessContacts') \
+            .where('claimPhone', '==', digits).limit(50).get()
+    except Exception as e:
+        print("claim lookup fail: %s" % e)
+        return jsonify({"ok": True, "claimed": [], "note": "abhi dekh nahi paye"})
+
+    now = _dt_now_iso()
+    claimed = []
+    for row in rows:
+        d = row.to_dict() or {}
+        if not d.get('claimPending'):
+            continue
+        try:
+            firestore_db.collection('businesses').document(row.id).set(
+                {"ownerId": request.uid, "ownerAssignedAt": now}, merge=True)
+            firestore_db.collection('businessContacts').document(row.id).set(
+                {"ownerUid": request.uid, "claimPending": False, "updatedAt": now}, merge=True)
+            claimed.append(row.id)
+        except Exception as e:
+            print("claim %s fail: %s" % (row.id, e))
+
+    if claimed:
+        _audit("owner_claimed_listings", request.uid, "owner", ",".join(claimed[:5]),
+               "%d listing malik ke naam hui" % len(claimed))
+
+    return jsonify({"ok": True, "claimed": claimed})
+
+
 @app.route('/bed/clear-stale-lock', methods=['POST'])
 @limiter.limit("60 per hour")
 @require_auth
