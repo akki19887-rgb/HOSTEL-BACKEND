@@ -3086,6 +3086,37 @@ def update_lead():
     return jsonify({"ok": True})
 
 
+@app.route('/staff/roster', methods=['POST'])
+@limiter.limit("120 per hour")
+@require_staff
+def staff_roster():
+    """Team ki list - lead saunpne ke liye.
+
+    Pehle app "Staff ki UID chipkaiye" poochhta tha. UID sirf Staff Manager me
+    dikhti hai, aur wo admin-only hai - to field officer lead kisi sathi ko de
+    hi nahi sakta tha. Use admin ko phone karke 28 akshar ka UID likhwana padta.
+
+    Yahan sirf naam, role aur uid jata hai. Phone aur email nahi - unki yahan
+    zaroorat hi nahi.
+    """
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+    rows = []
+    try:
+        for d in firestore_db.collection('staff').limit(200).stream():
+            s = d.to_dict() or {}
+            if s.get('disabled') is True:
+                continue
+            rows.append({"uid": d.id,
+                         "name": s.get('name') or s.get('displayName') or d.id[:8],
+                         "role": s.get('role') or ''})
+    except Exception as e:
+        print("roster fail: %s" % e)
+        return jsonify({"error": "List nahi aa payi"}), 500
+    rows.sort(key=lambda r: (r.get("name") or "").lower())
+    return jsonify({"ok": True, "staff": rows})
+
+
 @app.route('/admin/leads/link', methods=['POST'])
 @limiter.limit("60 per hour")
 @require_staff
