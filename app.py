@@ -1712,6 +1712,15 @@ def listing_set_owner_phone():
     phone = (body.get('phone') or '').strip()
     owner_name = (body.get('ownerName') or '').strip()[:120]
 
+    # Property aur malik ki jaanch - sab marzi se, kyunki purani listing edit karte
+    # waqt ye na bheje jayen to unhe mitana nahi hai.
+    property_id = _clean_code(body.get('propertyId'))
+    person_role = _pick(body.get('personRole'), _PERSON_ROLES)
+    reg_type = _pick(body.get('regType'), _REG_TYPES)
+    reg_number = _clean_code(body.get('regNumber'))
+    portal_match = _pick(body.get('portalNameMatch'), _MATCH)
+    upi_match = _pick(body.get('upiNameMatch'), _MATCH)
+
     if not business_id or len(business_id) > 200:
         return jsonify({"error": "businessId chahiye"}), 400
     digits = _claim_digits(phone)
