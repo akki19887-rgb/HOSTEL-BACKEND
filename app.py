@@ -3068,7 +3068,7 @@ def update_lead():
 
 @app.route('/admin/leads/link', methods=['POST'])
 @limiter.limit("60 per hour")
-@require_admin
+@require_staff
 def link_lead_to_owner():
     """Malik raazi ho gaya. Uske phone number se uski UID dhoondhi jati hai,
     aur lead se ek asli listing ban jati hai - usi ke naam par.
