@@ -3048,8 +3048,17 @@ def update_lead():
         })
         upd['contactLog'] = log[-50:]
 
+    # 'ownerPhone' ka matlab hai: malik ka LOGIN number, Firebase me jaanch ho
+    # chuki hai. Use sirf /admin/leads/link bharta hai. Field me likha kachcha
+    # number wahan daal dene se lead card par "malik jud gaya" wala panel khul
+    # jata tha aur dusra staff use chhod deta tha - halanki koi juda hi nahi tha.
+    #
+    # Ab kachcha number 'phone' me jata hai - wahi jise Call button dialta hai.
+    raw_phone = (body.get('phone') or '').strip()
+    if raw_phone:
+        upd['phone'] = _re.sub(r"\D", "", raw_phone)[-10:]
     owner_phone = (body.get('ownerPhone') or '').strip()
-    if owner_phone:
+    if owner_phone and getattr(request, 'staff_role', '') == 'admin':
         upd['ownerPhone'] = owner_phone
     owner_name = (body.get('ownerName') or '').strip()
     if owner_name:
