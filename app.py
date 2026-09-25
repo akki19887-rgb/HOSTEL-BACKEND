@@ -1661,6 +1661,23 @@ def _claim_digits(phone):
     return d if len(d) == 10 else ""
 
 
+_PERSON_ROLES = ("owner", "family", "manager")
+_REG_TYPES = ("gumasta", "udyam", "gst", "none")
+_MATCH = ("yes", "no", "unchecked")
+
+
+def _pick(value, allowed, default=""):
+    """Sirf ginti ki hui values. Browser jo bhi bheje, DB me kachra nahi jayega."""
+    v = (value or "").strip().lower()
+    return v if v in allowed else default
+
+
+def _clean_code(value, limit=40):
+    """Property ID / registration number - sirf akshar, ank, dash aur slash."""
+    v = _re.sub(r"[^A-Za-z0-9/\-]", "", (value or "").strip().upper())
+    return v[:limit]
+
+
 def _uid_for_phone(digits):
     """Is number par koi account hai? UID lautao, warna khali."""
     if not digits:
