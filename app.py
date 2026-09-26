@@ -3028,6 +3028,14 @@ def import_leads():
             'coordinates': {'lat': r.get('lat'), 'lng': r.get('lng')},
             'placeId':     place_id,
             'source':      (r.get('source') or 'google-maps').strip(),
+            # Google se aate hain:
+            'hours':       (r.get('hours') or '').strip()[:120],
+            'kind':        (r.get('kind') or '').strip()[:40],
+            # Ye do Google se NAHI milte - phone call par bharte hain.
+            # Khaali hi jaate hain; koi anumaan nahi lagaya jata.
+            'beds':        _int_or_none(r.get('beds'), 5000),
+            'rentFrom':    _int_or_none(r.get('rentFrom'), 500000),
+            'leadCode':    lead_code,
             'status':      'new',
             'contactLog':  [],
             'createdAt':   now,
