@@ -3404,7 +3404,7 @@ def link_lead_to_owner():
             'company':   lead.get('name', ''),
             'firstName': lead.get('ownerName', ''),
         },
-        'propertyType':  gender_map.get(lead.get('gender', ''), ''),
+        'propertyType':  _ptype,
         'city':          lead.get('city', ''),
         'state':         lead.get('state', 'Chhattisgarh'),
         'pinAddress':    lead.get('address', ''),
