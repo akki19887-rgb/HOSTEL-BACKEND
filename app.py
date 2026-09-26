@@ -3156,8 +3156,24 @@ def list_leads():
     except (TypeError, ValueError):
         limit = 200
 
+    # BINA CHHAANT KE POORI LIST NAHI.
+    #
+    # Yahan koi order_by nahi hai (har where+order_by jodi ke liye alag
+    # composite index banana padta, aur wo har nayi chhaant par phir se).
+    # Bina order_by ke 500 ki hadd ka matlab hai: KOI BHI 500. 2,171 lead
+    # me se baaki 1,671 kabhi dikhte hi nahi - aur kisi ko pata bhi nahi
+    # chalta ki wo gayab hain. Ye dhire chalne se zyada bura hai.
+    #
+    # Isliye kam se kam ek chhaant maangte hain. Sabse bada jila Indore hai
+    # (281 lead), to jila chunte hi hadd kabhi lagti hi nahi.
+    if not (state or district or city or locality or assigned):
+        return jsonify({"ok": True, "count": 0, "leads": [],
+                        "needFilter": True,
+                        "hint": "Pehle rajya ya jila chuniye."})
+
     out = [_lead_doc(d.to_dict(), d.id) for d in q.limit(limit).stream()]
-    return jsonify({"ok": True, "count": len(out), "leads": out})
+    return jsonify({"ok": True, "count": len(out), "leads": out,
+                    "capped": len(out) >= limit})
 
 
 @app.route('/admin/leads/update', methods=['POST'])
