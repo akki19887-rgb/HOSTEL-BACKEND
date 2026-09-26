@@ -3370,7 +3370,28 @@ def link_lead_to_owner():
         return jsonify({"error": "Ye listing pehle se bani hui hai",
                         "businessId": dup[0].id}), 409
 
-    gender_map = {'Female': 'Female', 'Male': 'Male', 'Co-ed': 'Co-ed'}
+    # LEAD KI BHASHA AUR APP KI BHASHA ALAG HAI - YAHAN BADALNI PADTI HAI.
+    #
+    # Pehle yahan 'Female' ko 'Female' hi likh diya jata tha. Par app me
+    # propertyType sirf teen shabd jaanta hai - 'Girls Hostel', 'Boys Hostel',
+    # 'House/Flat' - aur gender ka thappa rules.genderType se banta hai, jo
+    # 'Girls'/'Boys'/'Co-ed' hota hai.
+    #
+    # Natija ye tha: lead se bani GIRLS hostel guest ko "Co-ed" dikhti thi
+    # (kyunki rules khaali tha aur display ka default Co-ed hai), aur Discover
+    # ke "Girls" chip par wo listing aati hi nahi thi. Ye sirf dikhne ki baat
+    # nahi hai - ladkiyon ki surakshit jagah Co-ed batana galat hai, aur yahi
+    # rok form me (saveLegalAndNext) lagayi gayi thi. Ye rasta use bypass kar
+    # raha tha.
+    #
+    # Co-ed ka koi propertyType nahi hai (app me wo vikalp hai hi nahi), to use
+    # khaali chhodte hain - par genderType phir bhi bhar dete hain.
+    GENDER_MAP = {
+        'Female': ('Girls Hostel', 'Girls'),
+        'Male':   ('Boys Hostel',  'Boys'),
+        'Co-ed':  ('',             'Co-ed'),
+    }
+    _ptype, _gtype = GENDER_MAP.get((lead.get('gender') or '').strip(), ('', ''))
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
     biz = {
