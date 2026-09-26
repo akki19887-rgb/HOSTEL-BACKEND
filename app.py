@@ -2069,8 +2069,9 @@ def admin_manage_staff():
     action = data.get("action")
 
     if action == "list":
+        # Hadd pehle thi hi nahi - poori staffRoles stream hoti thi.
         out = []
-        for d in firestore_db.collection('staffRoles').stream():
+        for d in firestore_db.collection('staffRoles').limit(500).stream():
             out.append({"uid": d.id, **(d.to_dict() or {})})
         return jsonify({"ok": True, "staff": out})
 
