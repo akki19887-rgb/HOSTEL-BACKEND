@@ -3064,6 +3064,54 @@ def import_leads():
     return jsonify({"ok": True, "added": added, "skipped": skipped, "invalid": bad})
 
 
+# Dropdown ki suchi. Sirf naam aur ginti - lead ka data nahi.
+#
+# Isse 10 minute yaad rakha jata hai. Bina cache ke har baar poori leads
+# collection padhni padti, aur ye route tab har page-open par chalta hai.
+_PLACES_CACHE = {"at": 0.0, "data": None}
+_PLACES_TTL = 600          # 10 minute
+
+
+@app.route('/admin/leads/places', methods=['GET'])
+@limiter.limit("120 per hour")
+@require_staff
+def lead_places():
+    """rajya -> jila -> area, ginti ke saath."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    fresh = (request.args.get('fresh') or '') == '1'
+    now = _time.time()
+    if not fresh and _PLACES_CACHE["data"] is not None \
+            and (now - _PLACES_CACHE["at"]) < _PLACES_TTL:
+        return jsonify({"ok": True, "cached": True, **_PLACES_CACHE["data"]})
+
+    tree = {}
+    kul = 0
+    try:
+        # select() se sirf teen khaane aate hain - poora document nahi.
+        for d in firestore_db.collection('leads').select(
+                ['state', 'district', 'locality']).stream():
+            row = d.to_dict() or {}
+            st = (row.get('state') or '').strip() or 'Pata nahi'
+            ji = (row.get('district') or '').strip() or 'Pata nahi'
+            ar = (row.get('locality') or '').strip()
+            jile = tree.setdefault(st, {})
+            areas = jile.setdefault(ji, {"n": 0, "areas": {}})
+            areas["n"] += 1
+            if ar:
+                areas["areas"][ar] = areas["areas"].get(ar, 0) + 1
+            kul += 1
+    except Exception as e:
+        print("lead places fail: %s" % e)
+        return jsonify({"error": "Suchi nahi ban payi"}), 500
+
+    data = {"tree": tree, "total": kul}
+    _PLACES_CACHE["at"] = now
+    _PLACES_CACHE["data"] = data
+    return jsonify({"ok": True, "cached": False, **data})
+
+
 @app.route('/admin/leads', methods=['GET'])
 @limiter.limit("120 per hour")
 @require_staff
