@@ -2898,6 +2898,36 @@ def _slugify(name):
 
 LEAD_STATUSES = ('new', 'contacted', 'agreed', 'refused', 'converted')
 
+# Sheher ka teen-akshar ka naam. Jo log bolte hain wahi rakha hai - Bhopal ko
+# koi "BHO" nahi kehta, "BPL" kehta hai. Jo sheher yahan nahi hai uske pehle
+# teen akshar le liye jaate hain, taaki naya sheher jodne ke liye code badalna
+# na pade.
+CITY_CODE = {
+    'raipur': 'RPR', 'bilaspur': 'BSP', 'durg': 'DRG', 'bhilai': 'BHI',
+    'rajnandgaon': 'RJN', 'korba': 'KRB', 'ambikapur': 'ABK', 'jagdalpur': 'JDP',
+    'bhopal': 'BPL', 'indore': 'IND', 'jabalpur': 'JBP', 'gwalior': 'GWL',
+    'ujjain': 'UJN', 'sagar': 'SGR', 'rewa': 'REW',
+}
+
+
+def _city_code(city, district):
+    base = (city or district or '').strip().lower()
+    if base in CITY_CODE:
+        return CITY_CODE[base]
+    only = _re.sub(r'[^a-z]', '', base)
+    return (only[:3] or 'xxx').upper()
+
+
+def _int_or_none(v, hadd):
+    """Kachche input se seedha ank. Galat nikla to None - jhootha 0 nahi."""
+    if v in (None, ''):
+        return None
+    try:
+        n = int(float(str(v).replace(',', '').strip()))
+    except (TypeError, ValueError):
+        return None
+    return n if 0 <= n <= hadd else None
+
 
 def _lead_doc(d, doc_id):
     x = d or {}
