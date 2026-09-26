@@ -3174,6 +3174,18 @@ def update_lead():
     if owner_name:
         upd['ownerName'] = owner_name
 
+    # BED AUR RATE - phone call ki asli kamai.
+    #
+    # Ye Google se nahi milte. Caller poochhta hai aur yahin likhta hai. Pehle
+    # ye baat sirf note ke text me padi rehti thi, isliye na chhaanti ja sakti
+    # thi na gini. 'beds' me galat kuch bheja to kuch nahi badlega - jhootha 0
+    # likhne se accha hai khaali rehna.
+    for khaana, hadd in (('beds', 5000), ('rentFrom', 500000)):
+        if khaana in body:
+            val = _int_or_none(body.get(khaana), hadd)
+            if val is not None:
+                upd[khaana] = val
+
     # Kaam ki tick-list - kya-kya karna baaki hai.
     # Field officer ko dobara poochhna na pade ki "yahan karna kya hai".
     if isinstance(body.get('tasks'), list):
