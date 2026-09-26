@@ -3409,7 +3409,11 @@ def link_lead_to_owner():
         'state':         lead.get('state', 'Chhattisgarh'),
         'pinAddress':    lead.get('address', ''),
         'coordinates':   lead.get('coordinates') or {},
-        'rules':         {},
+        # genderType yahin bhar dete hain. Khaali chhodne par display default
+        # 'Co-ed' maan leta hai - yani girls hostel Co-ed dikhti. Lead me gender
+        # pata na ho to khaali hi rahega, aur listing waise bhi pending_approval
+        # me hai: form bharte waqt gender chunna zaroori hai.
+        'rules':         ({'genderType': _gtype} if _gtype else {}),
         'roomsAndBeds':  [],
         'layout2D':      [],
         'status':        'pending_approval',
