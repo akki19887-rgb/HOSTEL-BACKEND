@@ -196,14 +196,86 @@ def otp_attempt_clear(session_id):
 
 ADVANCE_PERCENT = int(os.environ.get("ADVANCE_PERCENT", "20"))
 
+# PURANI DIKKAT (26 Sept 2026 ko theek hui)
+# ------------------------------------------
+# Ye function bed ka SIRF EK PERIOD ka daam jodta tha. Use na quantity pata
+# thi, na plan, na mess - browser sirf propertyId aur bedIds bhejta tha.
+#
+# Natija: bed 6000/mahina, guest 6 mahine chunta hai. App kehta 36,000 ka
+# 20% = 7,200. Server order banata 6,000 ka 20% = 1,200. Phir app ka apna
+# guard (index.html) dono ko milata, farq dekhta, aur guest ko jhootha
+# "The price for this bed has changed" dikha kar payment rok deta.
+# Yani EK MAHINE SE LAMBI HAR ONLINE BOOKING FAIL HOTI THI.
+# Daily plan par ulti galti: 2 din ke stay par MAHINE ka 20% lagta.
+#
+# Ab client sirf ye batata hai ki kaunsa plan aur kitne period. Har rupaya
+# phir bhi database se hi aata hai - mess ka rate bhi rules se, client se nahi.
 
-def compute_booking_amount(db, property_id, bed_ids):
+# Kis plan par bed ke kaunse khaane dekhne hain. Kram maayne rakhta hai -
+# pehla jo mile wahi. 'price' sirf monthly ka purana naam hai.
+_PLAN_FIELDS = {
+    'monthly': ('priceMonthly', 'price'),
+    'weekly':  ('priceWeekly',),
+    'daily':   ('priceDaily',),
+}
+
+# Mess ka rate rules me isi naam se rakha jata hai.
+_MESS_FIELDS = {
+    'monthly': 'messMonthly',
+    'weekly':  'messWeekly',
+    'daily':   'messDaily',
+}
+
+# Ek booking me itne se zyada period nahi. 60 mahine = 5 saal, uske aage
+# koi asli booking nahi hoti - aur ye ek galat ya shararti input ko
+# lakhon ka order banane se rokta hai.
+_MAX_QTY = 60
+
+
+def _rate_for(bed, plan):
+    for f in _PLAN_FIELDS[plan]:
+        v = bed.get(f)
+        if v not in (None, ''):
+            try:
+                n = int(float(v))
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                return n
+    return 0
+
+
+def compute_booking_amount(db, property_id, bed_ids, plan='monthly', qty=1,
+                           mess_plan=''):
     """
     Returns (advance_paise, total_rupees, owner_uid) or raises ValueError.
-    Prices are read live from businesses/{id}.roomsAndBeds — never from the client.
+
+    Prices are read live from businesses/{id}.roomsAndBeds - never from the
+    client. The client only says WHICH plan and HOW MANY periods; every rupee
+    figure comes from the database.
     """
     if not property_id or not bed_ids:
         raise ValueError("propertyId and bedIds are required.")
+
+    plan = (plan or 'monthly').strip().lower()
+    if plan not in _PLAN_FIELDS:
+        raise ValueError("Unknown plan: %s" % plan)
+
+    # `int(qty or 1)` mat likhna: 0 bhi falsy hai, to qty=0 chup-chaap 1 ban
+    # jata tha aur guest se ek period ka paisa le liya jata. Sirf "bheja hi
+    # nahi" (None/khaali) ka matlab 1 hai; 0 ek galti hai aur dikhni chahiye.
+    if qty is None or qty == '':
+        qty = 1
+    try:
+        qty = int(qty)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid quantity.")
+    if qty < 1 or qty > _MAX_QTY:
+        raise ValueError("Quantity must be between 1 and %d." % _MAX_QTY)
+
+    mess_plan = (mess_plan or '').strip().lower()
+    if mess_plan and mess_plan not in _MESS_FIELDS:
+        raise ValueError("Unknown mess plan: %s" % mess_plan)
 
     snap = db.collection("businesses").document(property_id).get()
     if not snap.exists:
@@ -211,23 +283,45 @@ def compute_booking_amount(db, property_id, bed_ids):
     biz = snap.to_dict() or {}
 
     wanted = set(bed_ids)
-    total = 0
+    per_period = 0
     found = set()
     for room in (biz.get("roomsAndBeds") or []):
         for bed in (room.get("beds") or []):
             if bed.get("id") in wanted:
-                # Refuse to price a bed that is already taken — this also closes
+                # Refuse to price a bed that is already taken - this also closes
                 # the double-booking race where two guests pay for one bed.
                 if bed.get("status") and bed.get("status") != "available":
-                    raise ValueError(f"Bed {bed.get('id')} is no longer available.")
-                total += int(bed.get("priceMonthly") or bed.get("price") or 0)
+                    raise ValueError("Bed %s is no longer available." % bed.get('id'))
+                rate = _rate_for(bed, plan)
+                if rate <= 0:
+                    # Is bed par ye plan hai hi nahi. Pehle yahan chup-chaap 0
+                    # jud jata tha aur guest ko doosre plan ka daam lag jata.
+                    raise ValueError(
+                        "Bed %s has no %s rate." % (bed.get('id'), plan))
+                per_period += rate
                 found.add(bed.get("id"))
 
     missing = wanted - found
     if missing:
-        raise ValueError(f"Unknown bed(s): {', '.join(sorted(missing))}")
-    if total <= 0:
+        raise ValueError("Unknown bed(s): %s" % ', '.join(sorted(missing)))
+    if per_period <= 0:
         raise ValueError("Could not determine a price for these beds.")
+
+    # Mess ka rate bhi database se. Client sirf plan ka naam bhejta hai.
+    mess_per_period = 0
+    if mess_plan:
+        rules = biz.get('rules') or {}
+        raw = rules.get(_MESS_FIELDS[mess_plan])
+        try:
+            mess_per_period = int(float(raw)) if raw not in (None, '') else 0
+        except (TypeError, ValueError):
+            mess_per_period = 0
+        if mess_per_period < 0:
+            mess_per_period = 0
+
+    # Mess bhi period se guna hota hai. Pehle frontend use ek hi baar jodta tha,
+    # yani 6 mahine ka mess ek mahine ke daam me chala jata tha.
+    total = (per_period + mess_per_period) * qty
 
     advance_rupees = round(total * ADVANCE_PERCENT / 100)
     return advance_rupees * 100, total, biz.get("ownerId")
