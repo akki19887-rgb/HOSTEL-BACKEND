@@ -3010,6 +3010,10 @@ def import_leads():
         except (TypeError, ValueError):
             review_val = 0
 
+        pre = _city_code(r.get('city'), r.get('district'))
+        last_num[pre] = last_num.get(pre, 0) + 1
+        lead_code = '%s-%04d' % (pre, last_num[pre])
+
         batch.set(col.document(), {
             'name':        name,
             'phone':       (r.get('phone') or '').strip(),
