@@ -2958,11 +2958,22 @@ def import_leads():
     col = firestore_db.collection('leads')
 
     # Jo pehle se hain - ek hi baar me
+    # Ek hi chakkar me do cheezein: kaunsi placeId pehle se hai, aur har sheher
+    # me code kahan tak pahunch chuka hai. Alag se ginne ka matlab hota poora
+    # collection dobara padhna.
     existing = set()
-    for d in col.select(['placeId']).stream():
-        pid = (d.to_dict() or {}).get('placeId')
+    last_num = {}
+    for d in col.select(['placeId', 'leadCode']).stream():
+        row = d.to_dict() or {}
+        pid = row.get('placeId')
         if pid:
             existing.add(pid)
+        code = (row.get('leadCode') or '').strip().upper()
+        m = _re.match(r'^([A-Z]{2,5})-(\d{1,6})$', code)
+        if m:
+            pre, num = m.group(1), int(m.group(2))
+            if num > last_num.get(pre, 0):
+                last_num[pre] = num
 
     now = _dt.datetime.now(_dt.timezone.utc).isoformat()
     batch = firestore_db.batch()
