@@ -3072,6 +3072,17 @@ _PLACES_CACHE = {"at": 0.0, "data": None}
 _PLACES_TTL = 600          # 10 minute
 
 
+def _audit_limit():
+    """Hadd client se aati thi aur upar koi rok nahi thi - limit=10000000
+    bhej kar poora auditLog khinchwaya ja sakta tha. Ab 500 se upar nahi."""
+    raw = (request.get_json(silent=True, force=True) or {}).get('limit', 100)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 100
+    return max(1, min(n, 500))
+
+
 @app.route('/admin/leads/places', methods=['GET'])
 @limiter.limit("120 per hour")
 @require_staff
