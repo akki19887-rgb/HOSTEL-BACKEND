@@ -2188,7 +2188,7 @@ def admin_audit():
     rows = []
     q = (firestore_db.collection('auditLog')
          .order_by('at', direction=Query.DESCENDING)
-         .limit(int((request.get_json(silent=True, force=True) or {}).get('limit', 100))))
+         .limit(_audit_limit()))
     for d in q.stream():
         rows.append({"id": d.id, **(d.to_dict() or {})})
     return jsonify({"ok": True, "rows": rows})
