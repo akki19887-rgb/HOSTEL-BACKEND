@@ -3035,6 +3035,10 @@ def import_leads():
             # Google se aate hain:
             'hours':       (r.get('hours') or '').strip()[:120],
             'kind':        (r.get('kind') or '').strip()[:40],
+            # 'seva-sadan' = dharmarth/biradari ka hostel. Hataya nahi jata -
+            # inme se kuch sach me kiraya lete hain - par card par laal patti
+            # lag jati hai, taaki caller phone milane se pehle jaan le.
+            'orgType':     (r.get('orgType') or '').strip()[:20],
             # Ye do Google se NAHI milte - phone call par bharte hain.
             # Khaali hi jaate hain; koi anumaan nahi lagaya jata.
             'beds':        _int_or_none(r.get('beds'), 5000),
