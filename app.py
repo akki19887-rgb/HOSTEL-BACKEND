@@ -404,7 +404,7 @@ def razorpay_create_order():
     # Firestore on every single order.
     try:
         amount_paise, total_rupees, owner_uid = compute_booking_amount(
-            firestore_db, property_id, bed_ids)
+            firestore_db, property_id, bed_ids, plan, qty, mess_plan)
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
 
