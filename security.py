@@ -308,10 +308,21 @@ def compute_booking_amount(db, property_id, bed_ids, plan='monthly', qty=1,
         raise ValueError("Could not determine a price for these beds.")
 
     # Mess ka rate bhi database se. Client sirf plan ka naam bhejta hai.
+    #
+    # DO SHAKAL PADHNI PADTI HAIN. Ye code rules.messMonthly dhoondhta tha,
+    # par app hamesha rules.messPrices.monthly likhta aaya hai (index.html me
+    # businessRules.messPrices). Matlab mess ka daam HAMESHA 0 nikalta tha,
+    # chahe malik ne bhara ho. Nayi shakal pehle, purani fallback me - taaki
+    # agar kahin purane naam se data pada ho to wo bhi chale.
     mess_per_period = 0
     if mess_plan:
         rules = biz.get('rules') or {}
-        raw = rules.get(_MESS_FIELDS[mess_plan])
+        nested = rules.get('messPrices')
+        raw = None
+        if isinstance(nested, dict):
+            raw = nested.get(mess_plan)
+        if raw in (None, ''):
+            raw = rules.get(_MESS_FIELDS[mess_plan])
         try:
             mess_per_period = int(float(raw)) if raw not in (None, '') else 0
         except (TypeError, ValueError):
