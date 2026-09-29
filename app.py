@@ -382,6 +382,18 @@ def razorpay_create_order():
     data = request.get_json(silent=True, force=True) or {}
     property_id = data.get('propertyId')
     bed_ids = data.get('bedIds') or []
+    # Plan, kitne period aur mess - ye teenon browser se aate hain, par SIRF
+    # naam/ginti ke roop me. Ek bhi rupaya browser se nahi aata; har daam
+    # neeche Firestore se padha jata hai.
+    #
+    # Pehle ye teenon bheje hi nahi jate the, isliye server har booking ko
+    # "1 mahina, 1 period, bina mess" maan leta tha. Client apna asli total
+    # (plan x qty + mess) isse milata hai aur alag nikalne par payment rok
+    # deta hai - to 2 mahine ki, mess wali, ya daily/weekly har booking
+    # "price has changed" keh kar ruk jati thi.
+    plan = data.get('plan') or 'monthly'
+    qty = data.get('qty') or 1
+    mess_plan = data.get('messPlan') or ''
     currency = 'INR'
 
     # THE BROWSER NO LONGER SENDS AN AMOUNT AT ALL.
