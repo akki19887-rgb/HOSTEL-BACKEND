@@ -666,7 +666,11 @@ def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
     def _update(transaction):
         biz_snap = biz_ref.get(transaction=transaction)
         if not biz_snap.exists:
-            return
+            # Pehle yahan sirf 'return' tha. Bulane wale ko lagta tha kaam ho gaya,
+            # jabki ek bhi bed occupied nahi hua. Galat property_id ya beech me
+            # hataai gayi listing - dono is raste se chup-chaap nikal jati thin.
+            raise RuntimeError('listing %s mili hi nahi - bed occupied nahi ho paye'
+                               % property_id)
         biz_data = biz_snap.to_dict() or {}
         rooms = biz_data.get('roomsAndBeds', []) or []
         updated_rooms = []
