@@ -590,12 +590,51 @@ def razorpay_verify():
         # From the signed order, not from the request body.
         bed_ids = bed_ids_from_order or [b.get('id') for b in (booking_context.get('beds') or []) if b.get('id')]
         if property_id and bed_ids:
-            try:
-                _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id)
-            except Exception as occErr:
-                # Payment + booking record are already safely saved - don't fail the whole
-                # request over this; it can be fixed manually via "Mark Occupied" in Architect Mode.
-                print(f"[!] Auto-occupy failed (fix manually if needed): {occErr}")
+            # BED OCCUPIED NA HO PAYE TO CHUP MAT RAHO.
+            #
+            # Payment aur booking dono save ho chuke hain, isliye poori request
+            # fail karna galat hoga. Par pehle yahan sirf ek log line thi - aur
+            # uska matlab tha: guest ka paisa aa gaya, par bed par abhi bhi
+            # 'available' likha hai. Agla guest wahi bed book kar lega. Do aadmi,
+            # ek bed, aur pata check-in ke din chalega.
+            occ_err = None
+            for _try in (1, 2):
+                try:
+                    _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id)
+                    occ_err = None
+                    break
+                except Exception as e:
+                    occ_err = e
+                    # Dohrana surakshit hai: bed ko do baar 'occupied' likhne se
+                    # kuch nahi bigadta. Firestore ki pal bhar ki dikkat aksar
+                    # doosri koshish me nikal jati hai.
+                    print(f"[!] Auto-occupy koshish {_try} fail: {e}")
+                    if _try == 1:
+                        _time.sleep(1.5)
+            if occ_err is not None:
+                bed_list = ', '.join(str(b) for b in (bed_ids or []))
+                warn_msg = ("PAISA AA GAYA PAR BED KHAALI DIKH RAHA HAI. Booking "
+                            + str(booking_id) + ", bed: " + bed_list + ". Is bed ko "
+                            + "abhi Architect Mode se Occupied kijiye, warna koi "
+                            + "doosra guest yahi bed book kar lega.")
+                print("[X] " + warn_msg + " | " + str(occ_err))
+                try:
+                    _write_notification({
+                        "type": "occupy_failed", "audience": "admin",
+                        "propertyId": property_id, "bookingId": booking_id,
+                        "title": "Bed occupied nahi ho paya",
+                        "message": warn_msg,
+                    })
+                    if owner_uid:
+                        _write_notification({
+                            "type": "occupy_failed", "audience": "owner",
+                            "ownerUid": owner_uid, "propertyId": property_id,
+                            "bookingId": booking_id,
+                            "title": "Bed occupied nahi ho paya",
+                            "message": warn_msg,
+                        })
+                except Exception as notifErr:
+                    print(f"[X] occupy-fail ki khabar bhi nahi ja payi: {notifErr}")
 
         # Tell everyone who needs to know. Nothing here notified anyone before, so a Razorpay
         # payment landed silently: the owner had no idea a bed had just been sold, and the guest
