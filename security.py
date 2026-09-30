@@ -285,7 +285,30 @@ def compute_booking_amount(db, property_id, bed_ids, plan='monthly', qty=1,
     wanted = set(bed_ids)
     per_period = 0
     found = set()
+
+    # JO MANZIL PUBLISH NAHI HUI, USKA BED BECHNA MANA HAI.
+    #
+    # Owner har manzil alag-alag publish karta hai. App guest ko sirf publish ki
+    # hui manzil ke tab dikhati hai - par wo chhanni SIRF SCREEN PAR thi. Bed ki
+    # ID haath lag jaye (aur wo seedhi hoti hai, jaise 'F0-R1-B1') to server daam
+    # nikaal deta tha aur booking ban jati thi. Owner ne wo manzil jaan-boojh kar
+    # rok rakhi hoti hai - aksar wo aadhi bani hoti hai.
+    #
+    # Purani listing me ye field hai hi nahi, isliye rok tabhi lagti hai jab
+    # field maujood ho AUR khaali na ho.
+    published = biz.get("publishedFloors")
+    khuli_manzil = set(published) if isinstance(published, list) and published else None
+
     for room in (biz.get("roomsAndBeds") or []):
+        if khuli_manzil is not None:
+            room_floor = room.get("floor") or "Ground Floor"
+            if room_floor not in khuli_manzil:
+                for bed in (room.get("beds") or []):
+                    if bed.get("id") in wanted:
+                        raise ValueError(
+                            "Bed %s is on a floor the owner has not published yet."
+                            % bed.get('id'))
+                continue
         for bed in (room.get("beds") or []):
             if bed.get("id") in wanted:
                 # Refuse to price a bed that is already taken - this also closes
