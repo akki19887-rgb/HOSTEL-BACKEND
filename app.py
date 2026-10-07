@@ -1507,6 +1507,106 @@ def secure_payout_details():
                     "legalMoved": moved_legal, "skipped": skipped})
 
 
+# ==========================================
+# 8c. MALIK KE BANK DETAILS MITAO
+# ==========================================
+# App malik se account number, IFSC aur cancelled cheque maangti thi, is vaade
+# par ki HostelOM uske bank account me paisa transfer karega. Aisa intezaam
+# code me kabhi tha hi nahi: guest kul kiraye ka 20% HostelOM ko online deta
+# hai aur baaki 80% malik ko hostel par seedha. HostelOM malik ka paisa na
+# leta hai, na rokta hai, na bhejta hai.
+#
+# App se wo form hata diya gaya. Par jo malik pehle bhar chuke hain, unka data
+# businessPayouts/{businessId} me aur unki cheque/QR ki photo payoutDocs/ me
+# pada hai. Jo cheez chahiye hi nahi, use rakhna hi nahi chahiye - kisi din
+# ek galti, aur wo bank details bahar.
+#
+# DO HISSE ME, JAAN-BOOJH KAR:
+#   bina kuch / ?dry=1   -> sirf ginti, kuch mitata nahi
+#   ?confirm=MITA_DO     -> asli me mitata hai
+#
+# Mitana wapas nahi ho sakta, isliye pehle dikhna chahiye ki kitna data hai.
+# Dobara chalane se kuch bigadta nahi.
+@app.route('/admin/purge-bank-details', methods=['POST'])
+@limiter.limit("5 per hour")
+@require_admin
+def purge_bank_details():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    asli = request.args.get('confirm') == 'MITA_DO'
+
+    # Bank ke wo khane jo payout ke liye liye gaye the. Inhe hi mitana hai -
+    # ownerUid/businessId jaise khane rehne de sakte hain, par doc hi mit raha
+    # hai to poora mit jayega.
+    BANK_KHANE = ('accountHolderName', 'accountNumber', 'ifsc', 'upiId',
+                  'chequePhotoUrl', 'qrCodeUrl', 'status')
+
+    mile = mite = 0
+    file_mili = file_miti = file_atki = 0
+    byora = []
+
+    from firebase_admin import storage as fb_storage
+
+    for d in firestore_db.collection('businessPayouts').stream():
+        pd = d.to_dict() or {}
+        kuch_hai = [k for k in BANK_KHANE if pd.get(k)]
+        if not kuch_hai:
+            continue
+        mile += 1
+        byora.append({"businessId": d.id, "khane": kuch_hai})
+
+        # Cheque aur QR ki photo - Storage se bhi jani chahiye, warna link
+        # mitakar bhi file bucket me padi rahegi.
+        for k in ('chequePhotoUrl', 'qrCodeUrl'):
+            path = pd.get(k)
+            if not path or not isinstance(path, str):
+                continue
+            # Jo seedha http link hai use chhod do - wo hamara bucket path
+            # nahi hai aur andha delete karna theek nahi.
+            if path.startswith('http'):
+                file_atki += 1
+                continue
+            file_mili += 1
+            if asli:
+                try:
+                    fb_storage.bucket().blob(path).delete()
+                    file_miti += 1
+                except Exception as e:
+                    # File pehle se na ho to ye theek hai - mitana hi tha.
+                    print(f"[!] purge-bank-details: {path} mit nahi payi: {e}")
+                    file_atki += 1
+
+        if asli:
+            d.reference.delete()
+            mite += 1
+
+    # 'payouts' collection - "HostelOM ne malik ko kitna bheja" ka hisaab.
+    # Aisa koi payout hua hi nahi, isliye isme jo pada hai wo bhi jhootha
+    # hisaab hai. Ginti bata dete hain, par mitate nahi: ye paise ka record
+    # hai, aur agar kabhi kuch asli me diya gaya hoga to uska nishaan rakhna
+    # zaroori hai. Faisla malik/admin ka, hamara nahi.
+    payout_ginti = sum(1 for _ in firestore_db.collection('payouts').stream())
+
+    return jsonify({
+        "ok": True,
+        "asli_me_mitaya": asli,
+        "bankDetailsMile": mile,
+        "bankDetailsMite": mite,
+        "photoMili": file_mili,
+        "photoMiti": file_miti,
+        "photoAtki": file_atki,
+        "puranePayoutRecord": payout_ginti,
+        "byora": byora[:50],
+        "agla_kadam": (
+            "Mit gaya. Dobara chalane par 0 aana chahiye."
+            if asli else
+            "Ye sirf ginti thi, kuch mita nahi. Mitane ke liye dobara chalaiye "
+            "?confirm=MITA_DO ke saath."
+        ),
+    })
+
+
 @app.route('/admin/hide-owner-phones', methods=['POST'])
 @limiter.limit("5 per hour")
 @require_admin
