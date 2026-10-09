@@ -194,7 +194,28 @@ def otp_attempt_clear(session_id):
 # database, every time.
 # ==========================================================================
 
-ADVANCE_PERCENT = int(os.environ.get("ADVANCE_PERCENT", "20"))
+# HOSTELOM KA HISSA - MALIK KE RATE KE UPAR.
+#
+# Pehle ye "advance" tha: guest kul kiraye ka 20% online deta tha aur wahi
+# HostelOM rakh leta tha. Matlab malik ko apne hi likhe rate ka 80% milta
+# tha - paisa uske kiraye me se katta tha.
+#
+# Ab ye markup hai. Malik jo rate likhta hai wo poora uska. HostelOM apna
+# hissa uske UPAR jod kar guest ko dikhata hai:
+#
+#     malik ne likha 5,000  ->  guest ko dikhega 6,000
+#     1,000 HostelOM ko online, 5,000 malik ko hostel par (poora)
+#
+# MESS PAR MARKUP NAHI LAGTA. Khana malik ka hai aur uska poora daam use
+# jata hai. Uspar 20% jodne se HostelOM ka khana mehnga dikhta, aur guest
+# hostel ko phone karke farq pakad leta.
+MARKUP_PERCENT = int(os.environ.get("MARKUP_PERCENT",
+                                    os.environ.get("ADVANCE_PERCENT", "20")))
+
+# Purana naam. app.py aur kuch purane test ise maangte hain, isliye rakha
+# hai - par iska matlab ab "kiraye me se kata hua hissa" nahi, "kiraye ke
+# upar juda hua hissa" hai.
+ADVANCE_PERCENT = MARKUP_PERCENT
 
 # PURANI DIKKAT (26 Sept 2026 ko theek hui)
 # ------------------------------------------
