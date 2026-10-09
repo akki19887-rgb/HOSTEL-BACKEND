@@ -374,9 +374,32 @@ def compute_booking_amount(db, property_id, bed_ids, plan='monthly', qty=1,
         if mess_per_period < 0:
             mess_per_period = 0
 
-    # Mess bhi period se guna hota hai. Pehle frontend use ek hi baar jodta tha,
-    # yani 6 mahine ka mess ek mahine ke daam me chala jata tha.
-    total = (per_period + mess_per_period) * qty
+    # ------------------------------------------------------------------
+    # MALIK KA HISSA AUR HAMARA HISSA - DO ALAG CHEEZEIN
+    # ------------------------------------------------------------------
+    # Mess bhi period se guna hota hai. Pehle frontend use ek hi baar jodta
+    # tha, yani 6 mahine ka mess ek mahine ke daam me chala jata tha.
+    #
+    # malik_total  = jo malik ko hostel par milega (bed + khana, poora)
+    # hamara_total = jo HostelOM ko online milega (sirf bed par markup)
+    # guest_total  = guest ko kul itna dikhega
+    #
+    # Markup PEHLE round hota hai, PHIR qty se guna - isliye guest ko jo
+    # per-mahina daam dikha tha, qty se guna karne par theek wahi total
+    # aata hai. Ulta karne par (pehle guna, phir round) 3 mahine ka total
+    # dikhaye gaye daam x 3 se ek-do rupaye alag nikal jata, aur client ka
+    # jawab server se na milta - payment "price changed" keh kar ruk jata.
+    malik_per_period = per_period + mess_per_period
+    hamara_per_period = round(per_period * MARKUP_PERCENT / 100)
 
-    advance_rupees = round(total * ADVANCE_PERCENT / 100)
-    return advance_rupees * 100, total, biz.get("ownerId")
+    malik_total = malik_per_period * qty
+    hamara_total = hamara_per_period * qty
+    guest_total = malik_total + hamara_total
+
+    # Lautne ka dhaancha wahi hai jo pehle tha:
+    #   pehla  = jo guest ABHI online dega (ab ye markup hai, advance nahi)
+    #   doosra = guest ka kul daam
+    # Malik ka hissa in dono ke fark se nikal aata hai, isliye alag se
+    # lautane ki zaroorat nahi - aur ek hi jagah se nikalne ka matlab hai
+    # ki dono kabhi aapas me nahi takrayenge.
+    return hamara_total * 100, guest_total, biz.get("ownerId")
