@@ -154,6 +154,33 @@ def build_limiter(app):
     return limiter
 
 
+def phone_key():
+    """Ginti PHONE NUMBER se, IP se nahi.
+
+    YE SABSE ZAROORI BADLAAV HAI.
+
+    Pehle OTP ki hadd IP par thi. Jio/Airtel par hazaaron log ek hi NAT IP
+    se aate hain - matlab us IP se teen OTP jaane ke baad us poore ilaake
+    ka login band ho jata tha. Ye kisi test ki dikkat nahi thi, ye har
+    asli guest ke saath ho raha tha.
+
+    Phone number sahi naap hai: ek number par SMS ki bauchaar rukti hai,
+    aur ek IP ke peeche baithe doosre log bina wajah band nahi hote.
+
+    Number na mile to IP par lautna padta hai - warna koi bina phone bheje
+    hadd se bach nikalta.
+    """
+    try:
+        data = request.get_json(silent=True, force=True) or {}
+        digits = ''.join(c for c in str(data.get('phone') or '') if c.isdigit())
+        if len(digits) >= 10:
+            return 'phone:' + digits[-10:]
+    except Exception:
+        pass
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return "ip:" + (fwd.split(",")[0].strip() if fwd else request.remote_addr or "unknown")
+
+
 # ==========================================================================
 # 3. OTP BRUTE-FORCE GUARD
 #
