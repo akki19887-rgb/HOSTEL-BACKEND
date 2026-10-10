@@ -752,7 +752,19 @@ def _clean_10digit_phone(raw):
 
 
 @app.route('/send-otp', methods=['POST'])
-@limiter.limit("3 per hour;10 per day")
+# HADD AB PHONE NUMBER PAR HAI, IP PAR NAHI.
+#
+# Pehle "3 per hour" IP par tha. Jio/Airtel par hazaaron log ek hi NAT IP
+# se aate hain - us IP se teen OTP ke baad poore ilaake ka login band.
+#
+# 6 per ghanta ek number ke liye kaafi hai (asli guest do-teen baar se
+# zyada nahi maangta), aur SMS ki bauchaar bhi rukti hai - har SMS ka
+# paisa hamara lagta hai.
+@limiter.limit("6 per hour;15 per day", key_func=phone_key)
+# IP par ek dheeli si hadd, taaki koi script hazaaron alag number na
+# aazma sake. Itni dheeli ki ek NAT IP ke peeche baithe asli log kabhi
+# ispar na takrayein.
+@limiter.limit("80 per hour")
 def send_otp():
     if not TWOFACTOR_API_KEY:
         return jsonify({"error": "SMS OTP not configured on server. Set TWOFACTOR_API_KEY env var."}), 500
