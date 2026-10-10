@@ -733,6 +733,29 @@ def _mark_beds_occupied(property_id, bed_ids, booking_id, lock_id):
     _update(transaction)
 
 
+@app.errorhandler(429)
+def handle_rate_limited(e):
+    """Hadd paar hone par insaan ki bhasha me jawab.
+
+    YAHI JAGAH THI JAHAN SE JHOOTH JAISA TEXT NIKAL RAHA THA.
+
+    Neeche wala handle_unexpected_error har HTTPException ka `e.description`
+    seedha guest tak bhej deta hai. flask-limiter apni hadd ka naam hi
+    description me rakhta hai - isliye guest ko laal dabbe me "3 per 1 hour"
+    dikhta tha. Uska koi matlab nahi banta, aur usse ye bhi pata nahi chalta
+    ki kab dobara koshish kare ya aur kaunsa raasta hai.
+
+    Ye handler us generic wale se pehle chalta hai (Flask zyada khaas code
+    ko pehle dekhta hai), isliye 429 ab kabhi wo andar ka text nahi dikhata.
+    """
+    return jsonify({
+        "error": "Abhi bahut baar koshish ho chuki hai. "
+                 "Thodi der (lagbhag ek ghanta) baad dobara try kijiye. "
+                 "Jaldi ho to Google ya Email se login kar lijiye.",
+        "rateLimited": True,
+    }), 429
+
+
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
     # 404 / 405 / 400 etc. are normal HTTP responses, not crashes. Pehle ye bhi
