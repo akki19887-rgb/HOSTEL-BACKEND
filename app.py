@@ -793,7 +793,9 @@ def send_otp():
 
 
 @app.route('/verify-otp', methods=['POST'])
-@limiter.limit("20 per hour")
+# Yahan bhi phone se - wahi NAT wali wajah.
+@limiter.limit("20 per hour", key_func=phone_key)
+@limiter.limit("200 per hour")
 def verify_otp():
     if not TWOFACTOR_API_KEY:
         return jsonify({"error": "SMS OTP not configured on server."}), 500
