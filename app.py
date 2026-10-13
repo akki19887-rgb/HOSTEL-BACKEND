@@ -4010,6 +4010,64 @@ def repair_owner_links():
     })
 
 
+# ---- JAGAYE RAKHO ----------------------------------------------------------
+#
+# HOSTEL-BACKEND ab paid plan (0.5 CPU) par hai, isliye ye kabhi nahi sota.
+# HOSTEL-MCP abhi free plan par hai aur 15 minute koi request na aane par so
+# jata hai - jiski wajah se MCP ka connection beech kaam me toot jata hai.
+#
+# To jo server kabhi nahi sota, wahi doosre ko har 10 minute me ek halki si
+# dastak de dega. MCP par IP-lock laga hai, to hamein 404 milega - aur yahi
+# kaafi hai: 404 bhi tabhi aata hai jab server JAG kar jawaab de raha ho.
+# Hum wahan se kuch maang bhi nahi rahe, sirf jaga rahe hain.
+#
+# Ye JUGAAD hai, ilaaj nahi. Pakka ilaaj = HOSTEL-MCP ko bhi $7 wale plan par
+# daal dena. Agar Render kabhi sone ka niyam badal de to ye bekaar ho jayega.
+#
+# Band karna ho to Render par env var KEEPALIVE_URLS="" set kar dijiye.
+# Samay badalna ho to KEEPALIVE_MINUTES.
+# ---------------------------------------------------------------------------
+KEEPALIVE_URLS = [u.strip() for u in os.environ.get(
+    "KEEPALIVE_URLS", "https://hostel-mcp.onrender.com/"
+).split(",") if u.strip()]
+
+try:
+    KEEPALIVE_MINUTES = max(1, int(os.environ.get("KEEPALIVE_MINUTES", "10")))
+except ValueError:
+    KEEPALIVE_MINUTES = 10
+
+
+def _jaga_raho_chakkar():
+    import time as _t
+    while True:
+        _t.sleep(KEEPALIVE_MINUTES * 60)
+        for u in KEEPALIVE_URLS:
+            try:
+                r = requests.get(u, timeout=20)
+                # 404 bhi theek hai - matlab server jag kar jawaab de raha hai.
+                print(f"[jaga] {u} -> {r.status_code}", flush=True)
+            except Exception as e:
+                print(f"[jaga] {u} -> nahi pahuncha: {str(e)[:120]}", flush=True)
+
+
+def start_keepalive():
+    """Sirf Render par chalega. Local par ya test me network ko haath nahi lagayega."""
+    if not KEEPALIVE_URLS:
+        return False
+    if not os.environ.get("RENDER"):
+        return False
+    import threading
+    threading.Thread(target=_jaga_raho_chakkar, name="jaga-raho", daemon=True).start()
+    print(f"[jaga] keep-alive chalu - har {KEEPALIVE_MINUTES} min: "
+          + ", ".join(KEEPALIVE_URLS), flush=True)
+    return True
+
+
+# gunicorn `if __name__` nahi chalata - wo app.py ko import karta hai. Isliye
+# yahan, module ke star par, chalana zaroori hai.
+start_keepalive()
+
+
 if __name__ == '__main__':
     print("[up] Server started on port 5000!")
     port = int(os.environ.get("PORT", 5000))
