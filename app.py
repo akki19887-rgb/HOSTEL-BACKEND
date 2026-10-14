@@ -1352,6 +1352,161 @@ def chat_send():
     return jsonify({"ok": True})
 
 
+# ------------------------------------------------------------------
+# REPORT / BLOCK
+# ------------------------------------------------------------------
+# Two strangers can message each other in this app, so the person on the receiving
+# end needs a way out from inside it. Google Play's user-generated-content policy
+# requires both a report path and a block, and the app's content rating is declared
+# as "moderated chat" - which is only true if a report actually reaches somebody who
+# can act on it. So a report carries the conversation with it and rings the admin desk.
+REPORT_REASONS = {
+    "abusive":     "Abusive or threatening language",
+    "sexual":      "Sexual or inappropriate content",
+    "offplatform": "Asking to pay or talk outside the app",
+    "fake":        "Fake listing or false information",
+    "spam":        "Spam or unwanted advertising",
+    "other":       "Something else",
+}
+
+
+def _chat_party(booking_id, uid):
+    """(booking dict, role) for this uid. role is guest / owner / admin, else None."""
+    snap = firestore_db.collection('bookings').document(booking_id).get()
+    if not snap.exists:
+        return None, None
+    b = snap.to_dict() or {}
+    if b.get('guestUid') == uid:
+        return b, 'guest'
+    if b.get('ownerUid') == uid:
+        return b, 'owner'
+    if firestore_db.collection('admin').document(uid).get().exists:
+        return b, 'admin'
+    return b, None
+
+
+@app.route('/chat/report', methods=['POST'])
+@limiter.limit("20 per hour")
+@require_auth
+def chat_report():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    reason = (data.get("reason") or "").strip()
+    details = (data.get("details") or "").strip()[:1000]
+
+    if not booking_id or reason not in REPORT_REASONS:
+        return jsonify({"error": "bookingId and a valid reason are required."}), 400
+
+    b, role = _chat_party(booking_id, request.uid)
+    if b is None:
+        return jsonify({"error": "Booking not found."}), 404
+    if not role:
+        return jsonify({"error": "You are not part of this conversation."}), 403
+
+    # Carry the last 25 messages with the report. An admin who has to dig the
+    # conversation out by hand will not act in time, and a report nobody acts on
+    # is exactly the thing the policy exists to prevent.
+    recent = []
+    try:
+        rows = [m.to_dict() or {} for m in firestore_db.collection('bookings')
+                .document(booking_id).collection('messages').stream()]
+        rows.sort(key=lambda x: x.get('createdAt') or '')
+        for m in rows[-25:]:
+            recent.append({
+                "senderRole": m.get("senderRole"),
+                "text": (m.get("text") or "")[:500],
+                "createdAt": m.get("createdAt"),
+            })
+    except Exception as e:
+        print(f"[!] could not attach messages to report: {e}")
+
+    firestore_db.collection('chatReports').add({
+        "bookingId": booking_id,
+        "bookingCode": b.get('bookingId'),
+        "propertyId": b.get('propertyId'),
+        "reporterUid": request.uid,
+        "reporterRole": role,
+        "againstUid": b.get('ownerUid') if role == 'guest' else b.get('guestUid'),
+        "reason": reason,
+        "reasonLabel": REPORT_REASONS[reason],
+        "details": details,
+        "messages": recent,
+        "status": "open",
+        "createdAt": _dt_now_iso(),
+    })
+
+    _write_notification({
+        "type": "chat_report", "audience": "admin",
+        "title": f"Chat reported - {REPORT_REASONS[reason]}",
+        "message": f"{role} reported booking {b.get('bookingId') or booking_id}. {details[:150]}",
+        "ownerUid": b.get('ownerUid'), "guestUid": b.get('guestUid'),
+        "propertyId": b.get('propertyId'), "bookingId": booking_id,
+    })
+    return jsonify({"ok": True})
+
+
+@app.route('/chat/block', methods=['POST'])
+@limiter.limit("60 per hour")
+@require_auth
+def chat_block():
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    data = request.get_json(silent=True, force=True) or {}
+    booking_id = (data.get("bookingId") or "").strip()
+    want_block = bool(data.get("block", True))
+    if not booking_id:
+        return jsonify({"error": "bookingId is required."}), 400
+
+    b, role = _chat_party(booking_id, request.uid)
+    if b is None:
+        return jsonify({"error": "Booking not found."}), 404
+    if role not in ('guest', 'owner'):
+        return jsonify({"error": "You are not part of this conversation."}), 403
+
+    # Stored as a map keyed by uid rather than a list, so two people blocking at the
+    # same moment cannot overwrite each other the way an array write would.
+    blocks = dict(b.get('chatBlocks') or {})
+    if want_block:
+        blocks[request.uid] = _dt_now_iso()
+    else:
+        blocks.pop(request.uid, None)
+    firestore_db.collection('bookings').document(booking_id).update({"chatBlocks": blocks})
+
+    return jsonify({"ok": True, "blocked": want_block})
+
+
+@app.route('/chat/state', methods=['GET'])
+@limiter.limit("300 per hour")
+@require_auth
+def chat_state():
+    """Who has blocked whom, so the drawer draws itself right the moment it opens."""
+    if not firestore_db:
+        return jsonify({"error": "Server not fully configured."}), 500
+
+    booking_id = (request.args.get("bookingId") or "").strip()
+    if not booking_id:
+        return jsonify({"error": "bookingId is required."}), 400
+
+    b, role = _chat_party(booking_id, request.uid)
+    if b is None:
+        return jsonify({"error": "Booking not found."}), 404
+    if not role:
+        return jsonify({"error": "You are not part of this conversation."}), 403
+
+    blocks = b.get('chatBlocks') or {}
+    other = b.get('ownerUid') if role == 'guest' else b.get('guestUid')
+    return jsonify({
+        "ok": True,
+        "role": role,
+        "iBlocked": request.uid in blocks,
+        "theyBlocked": bool(other and other in blocks and role != 'admin'),
+    })
+
+
 # ==========================================
 # 7. SECURE FILE ACCESS (Aadhaar / PDFs / payment proofs)
 # ==========================================
