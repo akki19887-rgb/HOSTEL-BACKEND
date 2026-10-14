@@ -3144,13 +3144,33 @@ def account_delete():
         doc.reference.delete()
 
     # 2. Past bookings - anonymised, not deleted.
+    messages_cleared = 0
     for doc in firestore_db.collection('bookings').where('guestUid', '==', uid).stream():
+        # The chat sits under the booking and was being left behind - the booking said
+        # "Deleted user" while every message underneath still carried this person's uid
+        # and whatever they had typed. The owner's side of the conversation has to stay
+        # (it is their record of what was agreed), so the guest's messages are emptied
+        # rather than the thread being torn in half.
+        try:
+            for m in doc.reference.collection('messages').stream():
+                md = m.to_dict() or {}
+                if md.get('senderUid') == uid:
+                    m.reference.update({
+                        "senderUid": None,
+                        "text": "[message deleted with account]",
+                        "deletedWithAccount": True,
+                    })
+                    messages_cleared += 1
+        except Exception as err:
+            print(f"[!]  chat clear on {doc.id}: {err}")
+
         doc.reference.update({
             "guestUid": None,
             "guestName": "Deleted user",
             "guestPhone": "",
             "guestEmail": "",
             "idPhotoPath": "",
+            "chatBlocks": {},
             "accountDeletedAt": now_iso,
         })
         anonymised += 1
