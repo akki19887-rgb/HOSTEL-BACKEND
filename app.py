@@ -1306,6 +1306,17 @@ def chat_send():
     if not (is_admin or is_guest or is_owner):
         return jsonify({"error": "You are not part of this conversation."}), 403
 
+    # A block has to be enforced HERE, not just in the UI. A hidden composer stops an
+    # honest person; it does not stop anyone who opens the console. Admin is never blocked -
+    # they are the ones who have to go in and sort the argument out.
+    if not is_admin:
+        blocks = b.get('chatBlocks') or {}
+        other_uid = b.get('ownerUid') if is_guest else b.get('guestUid')
+        if request.uid in blocks:
+            return jsonify({"error": "You have blocked this person. Unblock them to send a message."}), 403
+        if other_uid and other_uid in blocks:
+            return jsonify({"error": "This person is not accepting messages on this booking."}), 403
+
     sender_role = 'guest' if is_guest else ('owner' if is_owner else 'admin')
     firestore_db.collection('bookings').document(booking_id).collection('messages').add({
         "senderRole": sender_role,
